@@ -121,6 +121,8 @@ src/model1/score.py         # Step 3
 src/model1/aggregate.py     # Step 4
 src/model1/predict.py       # single-headline inference for the demo
 tests/test_model1.py
+notebooks/run_model1_colab.ipynb   # full run on Colab GPU (Section 10)
+requirements.txt
 data/                       # gitignored
 reports/
 ```
@@ -132,8 +134,31 @@ reports/
 - The index starts at the data-driven month *S* (Step 5), and *S* is documented in the diagnostics report.
 - `classify_headline("Gasoline prices soar")` returns valid outputs from both models in under a second on CPU after loading.
 - Diagnostics report and sanity-check results are committed. Tests pass.
+- `notebooks/run_model1_colab.ipynb` runs end to end in Colab in smoke-test mode, saving outputs to Google Drive (Section 10).
 
-## 10. Open questions for the team
+## 10. Running on Google Colab
+
+The full scoring run happens in Colab (GPU), not on the coding agent's machine. The agent must deliver `notebooks/run_model1_colab.ipynb` that runs the whole pipeline end to end.
+
+### Notebook requirements
+1. **Setup cell:** clone the repo and install dependencies.
+   ```python
+   !git clone https://github.com/nvelasquez1551/can-news-nowcast-inflation.git
+   %cd can-news-nowcast-inflation
+   !pip install -r requirements.txt
+   ```
+   For a private repo, read a GitHub personal access token from Colab Secrets (`from google.colab import userdata; userdata.get("GITHUB_TOKEN")`). Never hard-code tokens in the notebook.
+2. **Persistent storage:** mount Google Drive (`from google.colab import drive; drive.mount("/content/drive")`) and point all `data/interim` and `data/processed` outputs to a Drive folder set in config (e.g. `/content/drive/MyDrive/can-news-nowcast-inflation/data`). Colab wipes local disk when the session ends.
+3. **GPU check:** print `torch.cuda.is_available()` and the device name; warn if no GPU (Runtime > Change runtime type > T4 GPU is enough).
+4. **Resumable runs:** each step skips work already saved on Drive (filtered chunks, scored chunks), so a disconnected free session can be restarted and continue.
+5. **Steps in order:** stream and filter FNSPID from Hugging Face, score with FinBERT and InflaBERT, aggregate monthly, apply the start-date rule, write `news_index_monthly.csv`, and print a short summary (articles per year, start month *S*, months flagged below 30).
+6. **Smoke-test mode:** a config flag (e.g. `sample_rows: 50000`) to run the whole notebook quickly on a small slice before the full run.
+
+### How a teammate runs it
+- Open it from GitHub: in Colab, File > Open notebook > GitHub tab, paste the repo URL, pick `notebooks/run_model1_colab.ipynb` (tick "Include private repos" if needed).
+- Set runtime to GPU, run all cells, and find outputs in the Drive folder.
+
+## 11. Open questions for the team
 
 - Which FNSPID file (or both) gives the best 1999 to 2023 coverage?
 - Headline only, or summary when available?
