@@ -1,0 +1,105 @@
+# Model 1: monthly news sentiment indexes from FNSPID headlines.
+# All paths and parameters live here so Colab / CLI can override storage only.
+
+dataset:
+  name: Zihan1004/FNSPID
+  revision: bf9189c41527198897d1af3e17b1a0095279fc45
+  # nasdaq filename typo (exteral) is the real Hugging Face path.
+  files:
+    - Stock_news/nasdaq_exteral_data.csv
+    - Stock_news/All_external.csv
+  columns_keep:
+    - Date
+    - Article_title
+    - Stock_symbol
+    - Publisher
+    - Lsa_summary
+
+models:
+  finbert:
+    name: ProsusAI/finbert
+    revision: 0bc2ac10dda6929bcb1f77ccc43c7ec5c424f031
+    # Maps model.config.id2label strings to score roles. Index order is never hard-coded.
+    role_aliases:
+      pos: [positive]
+      neg: [negative]
+      neu: [neutral]
+    score_positive_role: pos
+    score_negative_role: neg
+  inflabert:
+    name: MAPAi/InflaBERT
+    revision: 2dd3019d1a9e1cb8e7d0d297352f9bcea208d9de
+    # Published id2label is negative/neutral/positive (not up/down).
+    # Treat positive as inflation-up and negative as inflation-down; confirm on Colab.
+    role_aliases:
+      up: [positive, up, "inflation up"]
+      down: [negative, down, "inflation down"]
+      neu: [neutral]
+    score_positive_role: up
+    score_negative_role: down
+
+cutoff_day: 15
+min_articles_per_month: 30
+consecutive_months: 12
+batch_size: 32
+max_length: 512
+# Lower this on Colab if a chunk of the 23 GB Nasdaq file OOMs.
+chunksize: 100000
+# null = full run. Set to an integer (notebook uses 50000) for a smoke test.
+sample_rows: null
+use_narrow_lexicon: false
+# Default scores headlines. Set true to score Lsa_summary when it is non-empty.
+prefer_lsa_summary: false
+sanity_sample_size: 50
+sanity_sample_seed: 42
+
+# Active list unless use_narrow_lexicon is true. Whole-word, case-insensitive.
+keywords_broad:
+  - inflation
+  - cpi
+  - core cpi
+  - consumer price index
+  - consumer prices
+  - deflation
+  - disinflation
+  - prices
+  - gasoline
+  - gasoline prices
+  - gas prices
+  - food prices
+  - oil
+  - crude
+  - energy prices
+  - wages
+  - wage growth
+  - cost of living
+  - federal reserve
+  - fed
+  - interest rate
+  - rate hike
+  - tariffs
+  - supply chain
+  - ppi
+
+# InflaBERT paper lexicon; robustness switch only.
+keywords_narrow:
+  - inflation
+  - gasoline prices
+  - food prices
+  - deflation
+  - consumer price index
+  - cpi
+  - core cpi
+
+paths:
+  data_root: data
+  interim_dir: data/interim
+  processed_dir: data/processed
+  reports_dir: reports
+  data_notes: docs/data_notes.md
+
+cpi:
+  # FRED CPIAUCSL monthly index; diagnostics compute month-over-month percent change.
+  url: https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL
+  date_col: DATE
+  value_col: CPIAUCSL

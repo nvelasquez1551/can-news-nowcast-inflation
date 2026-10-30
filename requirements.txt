@@ -1,0 +1,13 @@
+# Pinned for Colab reproducibility. Written, not installed, by the coding agent.
+# Warning: pinning torch can replace Colab's CUDA wheel. After install, check
+# torch.cuda.is_available() and switch to a GPU runtime (T4 is enough) if it is False.
+numpy==2.5.4
+pandas==3.1.0
+pyarrow==26.0.0
+pyyaml==6.0.3
+torch==2.15.0
+transformers==5.22.0
+huggingface-hub==1.32.0
+matplotlib==3.11.2
+tqdm==4.70.1
+pytest==9.2.0
