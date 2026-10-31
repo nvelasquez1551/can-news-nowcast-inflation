@@ -10,3 +10,5 @@ Expected contents:
 - Data-driven start month **S** compared with InflaBERT's 2010-01 start
 
 A `sample_rows` smoke test does **not** answer 1999–2023 coverage. Use a full run for that.
+
+bye
