@@ -11,4 +11,4 @@ Expected contents:
 
 A `sample_rows` smoke test does **not** answer 1999–2023 coverage. Use a full run for that.
 
-bye
+hello
