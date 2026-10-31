@@ -101,5 +101,5 @@ paths:
 cpi:
   # FRED CPIAUCSL monthly index; diagnostics compute month-over-month percent change.
   url: https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL
-  date_col: DATE
+  date_col: observation_date
   value_col: CPIAUCSL
