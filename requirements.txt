@@ -12,4 +12,6 @@ transformers>=4.44
 huggingface-hub>=0.24
 matplotlib>=3.8
 tqdm>=4.66
+scipy>=1.11
+streamlit>=1.30
 pytest>=8.0

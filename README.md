@@ -53,3 +53,30 @@ Tests use tiny synthetic frames and mock `id2label` maps. They do not download F
 - Year coverage per file before trusting the union (`sample_rows: 50000` does not answer this).
 - Whether a 12-month streak at 30 articles exists, and which later months fall below 30.
 - Fill `reports/sanity_sample.csv` by hand (`human_price_direction`); the pipeline leaves it blank.
+
+## Model 2: evaluation helpers
+
+Feature construction and model fitting for the CPI nowcast live in the team notebooks (see the [Model 2 spec](docs/specs/model-2-cpi-nowcast.md)). `src/model2/evaluate.py` holds the shared metrics:
+
+- `rmse`, `mae`
+- `diebold_mariano(errors_a, errors_b, horizon=1)`: Diebold-Mariano test with the Harvey-Leybourne-Newbold correction. A positive statistic means forecast B is more accurate.
+- `compare_forecasts(frame, target="y", forecasts=[...], baseline="ar")`: one row per forecast with RMSE, MAE, and DM against the baseline, on the months all forecasts share.
+
+```python
+from src.model2.evaluate import compare_forecasts
+
+compare_forecasts(predictions, target="y", forecasts=["xgb_macro", "xgb_macro+infla"], baseline="ar")
+```
+
+```bash
+pytest tests/test_model2.py
+```
+
+## Demo (Streamlit)
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+- **Clasificador de titulares:** type a headline and see the InflaBERT and FinBERT label, score, and probabilities. The models download on first use.
+- **Nowcast vs. dato oficial:** reads `data/processed/model2_predictions.csv` (`month`, `y`, one column per model) and shows the chart and the `compare_forecasts` table. Until Model 2 writes that file, the tab shows a notice.
