@@ -10,9 +10,9 @@ Model 1 does not predict CPI. It streams FNSPID headlines, keeps price-related a
 
 `data/processed/news_index_monthly.csv`
 
-Month *t* uses only articles published from UTC day 1 through `cutoff_day` (default **15**) of month *t*. Later articles in that month are dropped; they are not rolled into month *t+1*. The sample starts at the first month **S** that begins 12 consecutive months with at least 30 in-window articles.
+Month *t* uses articles published from UTC day 1 through `cutoff_day` of month *t*. The default is **31**, the whole calendar month: the team nowcasts at the end of the month. Set `cutoff_day: 15` to reproduce InflaBERT's mid-month setup; later articles are then dropped, not rolled into month *t+1*. The sample starts at the first month **S** that begins 12 consecutive months with at least 30 in-window articles.
 
-All paths and parameters live in [`config/model1.yaml`](config/model1.yaml). Useful knobs: `cutoff_day`, `keywords_broad` / `use_narrow_lexicon`, `prefer_lsa_summary`, `sample_rows`, `chunksize`, `batch_size`.
+All paths and parameters live in [`config/model1.yaml`](config/model1.yaml). Useful knobs: `cutoff_day`, `keywords_broad` / `use_narrow_lexicon`, `exclude_title_patterns` (drops securities-offering headlines such as "XYZ prices $500M notes offering"), `prefer_lsa_summary`, `sample_rows`, `chunksize`, `batch_size`, `use_fp16`.
 
 ### Run on Google Colab (GPU)
 

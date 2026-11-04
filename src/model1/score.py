@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from src.model1.labels import (
     decoded_to_frame,
     resolve_role_map,
 )
+from src.model1.load import write_parquet_atomic
 
 LOGGER = logging.getLogger(__name__)
 
@@ -128,6 +130,7 @@ def score_texts(
     *,
     batch_size: int,
     max_length: int,
+    use_fp16: bool = False,
 ) -> pd.DataFrame:
     if not texts:
         columns = [
@@ -138,28 +141,39 @@ def score_texts(
         ]
         return pd.DataFrame(columns=columns)
 
+    # Batch texts of similar length so padding (and GPU time) stays small; the
+    # original order is restored at the end.
+    order = sorted(range(len(texts)), key=lambda idx: len(texts[idx]))
+    ordered = [texts[idx] or " " for idx in order]
+    precision = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if scorer.device.type == "cuda" and use_fp16
+        else contextlib.nullcontext()
+    )
+
     pieces: list[pd.DataFrame] = []
     model = scorer.model
     tokenizer = scorer.tokenizer
-    with torch.no_grad():
-        for start in range(0, len(texts), batch_size):
-            batch = [text if text else " " for text in texts[start : start + batch_size]]
+    with torch.no_grad(), precision:
+        for start in range(0, len(ordered), batch_size):
             encoded = tokenizer(
-                batch,
+                ordered[start : start + batch_size],
                 padding=True,
                 truncation=True,
                 max_length=max_length,
                 return_tensors="pt",
             )
             encoded = {key: value.to(scorer.device) for key, value in encoded.items()}
-            logits = model(**encoded).logits.detach().cpu().numpy()
+            logits = model(**encoded).logits.detach().float().cpu().numpy()
             decoded = decode_logits(logits, scorer.role_map)
             pieces.append(
                 decoded_to_frame(
                     decoded, prefix=scorer.prefix, role_prob_names=scorer.prob_columns
                 )
             )
-    return pd.concat(pieces, ignore_index=True)
+    scored = pd.concat(pieces, ignore_index=True)
+    scored.index = order
+    return scored.sort_index().reset_index(drop=True)
 
 
 def score_frame(
@@ -175,6 +189,7 @@ def score_frame(
             scorer,
             batch_size=cfg.batch_size,
             max_length=cfg.max_length,
+            use_fp16=cfg.use_fp16,
         )
         scored = pd.concat([scored, cols], axis=1)
     return scored
@@ -216,7 +231,7 @@ def score_filtered_chunks(cfg: Model1Config) -> pd.DataFrame:
                     scored[column] = pd.Series(dtype="float64")
         else:
             scored = score_frame(chunk, scorers, cfg)
-        scored.to_parquet(dest, index=False)
+        write_parquet_atomic(scored, dest)
         LOGGER.info("Wrote %s (%s rows).", dest, len(scored))
 
     frames = [pd.read_parquet(_scored_path_for(cfg, path)) for path in paths]
