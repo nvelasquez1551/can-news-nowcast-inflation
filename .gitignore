@@ -221,3 +221,5 @@ __marimo__/
 
 # Model 1 pipeline data (FNSPID streams, scored parquet, monthly indexes)
 data/
+
+notebooks/
