@@ -1,0 +1,15 @@
+feature,source_series,transformation,availability_lag
+y_lag1,CPIAUCSL,y shifted by 1 month(s),1
+y_lag2,CPIAUCSL,y shifted by 2 month(s),2
+y_lag3,CPIAUCSL,y shifted by 3 month(s),3
+y_ma12,CPIAUCSL,mean of y over previous 12 months (shift(1)),1
+cpi_core_chg_ma12,CPILFESL,mean of 100*diff(log) over previous 12 months (shift(1)),1
+cpi_core_chg,CPILFESL,"100*diff(log(cpi_core)), shifted by 1 month(s)",1
+ppi_chg,PPIACO,"100*diff(log(ppi)), shifted by 1 month(s)",1
+housing_chg,HOUST,"100*diff(log(housing)), shifted by 1 month(s)",1
+payems_chg,PAYEMS,"100*diff(log(payems)), shifted by 1 month(s)",1
+oil_mean_chg,DCOILWTICO,"100*diff(log(oil_mean)), shifted by 0 month(s)",0
+oil_last_chg,DCOILWTICO,"100*diff(log(oil_last)), shifted by 0 month(s)",0
+gas_mean_chg,GASREGW,"100*diff(log(gas_mean)), shifted by 0 month(s)",0
+gas_last_chg,GASREGW,"100*diff(log(gas_last)), shifted by 0 month(s)",0
+exp,MICH,"level, shifted by 1 month(s)",1
