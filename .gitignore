@@ -219,9 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Model 1 pipeline data (FNSPID streams, scored parquet, monthly indexes)
-data/
+# Data (Model 1 news indexes, nowcast raw/processed): never versioned
+/data/
 
-
-
-raw_data/
+# Nowcast model registry (joblib + metadata)
+/models/
