@@ -30,6 +30,15 @@ REGISTRY_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S-%f"
 RAW_MACRO_PATH = RAW_DATA_DIR / "macro_monthly_raw.csv"
 NEWS_INDEX_PATH = PROCESSED_DATA_DIR / "news_index_monthly.csv"  # salida del Modelo 1
 
+# Salidas del paquete (nombres nuevos: nunca pisan los archivos v1)
+CV_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results.csv"
+FIXED_PREDICTIONS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_predictions.csv"
+FIXED_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_results.csv"
+FIXED_DM_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_dm_tests.csv"
+EXPANDING_PREDICTIONS_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_predictions.csv"
+EXPANDING_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_results.csv"
+EXPANDING_DM_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_dm_tests.csv"
+
 # Salidas de los notebooks v1, usadas solo para verificar el refactor
 NB02_MODEL_TABLE_PATH = PROCESSED_DATA_DIR / "model_table_macro.csv"
 NB02_FEATURE_TABLE_PATH = PROCESSED_DATA_DIR / "feature_table.csv"
