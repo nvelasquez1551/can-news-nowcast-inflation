@@ -45,6 +45,7 @@ def train() -> pd.DataFrame:
         "cv_rmse_mean": [linear_folds.mean(), xgb["cv_rmse_mean"]],
         "cv_rmse_std": [linear_folds.std(), xgb["cv_rmse_std"]],
     })
+    params.CV_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     cv_results.to_csv(params.CV_RESULTS_PATH, index=False)
     print("XGBoost best params:", xgb["best_params"])
     print(cv_results.round(4).to_string(index=False))
