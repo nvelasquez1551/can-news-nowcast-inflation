@@ -4,6 +4,8 @@ Nowcasting US monthly inflation with financial news: an NLP classifier builds a 
 
 Specs: [Model 1](docs/specs/model-1-news-sentiment.md) (news indexes, implemented below) · [Model 2](docs/specs/model-2-cpi-nowcast.md) (CPI nowcast, in progress).
 
+Model 2 code: the [`nowcast`](nowcast/README.md) package (`pip install -e ".[dev]"`).
+
 ## Model 1: news sentiment indexes
 
 Model 1 does not predict CPI. It streams FNSPID headlines, keeps price-related articles, scores them with off-the-shelf **FinBERT** (`ProsusAI/finbert`) and **InflaBERT** (`MAPAi/InflaBERT`), and writes a monthly table that Model 2 will consume:
