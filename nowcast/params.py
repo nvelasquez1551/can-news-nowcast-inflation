@@ -173,3 +173,24 @@ DM_PAIRS = [
 # Re-búsqueda de hiperparámetros de XGBoost cada RETUNE_EVERY meses de test
 # (2020-01, 2021-01, 2022-01, 2023-01). None = parámetros fijos (reproduce 03b).
 RETUNE_EVERY = 12
+
+# ---------------------------------------------------------------------------
+# Explicación del nowcast (API y frontend)
+# ---------------------------------------------------------------------------
+# Cada feature se agrupa en un "motivo" legible. La contribución de un grupo es
+# la suma de las contribuciones de sus features.
+DRIVER_GROUPS = {
+    "Inflación pasada": ["y_lag1", "y_lag2", "y_lag3", "y_ma12"],
+    "Inflación subyacente": ["cpi_core_chg", "cpi_core_chg_ma12"],
+    "Precios al productor": ["ppi_chg"],
+    "Petróleo": ["oil_mean_chg", "oil_last_chg"],
+    "Gasolina": ["gas_mean_chg", "gas_last_chg"],
+    "Expectativas de inflación": ["exp"],
+    "Vivienda": ["housing_chg"],
+    "Empleo": ["payems_chg"],
+    "Estacionalidad": [MONTH_COL],
+    "Noticias": NEWS_COLS,
+}
+# Salida del Modelo 1 por artículo, para mostrar los titulares de cada mes
+NEWS_SCORED_PATH = PROCESSED_DATA_DIR / "news_scored.parquet"
+N_TOP_HEADLINES = 5
