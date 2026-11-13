@@ -38,6 +38,16 @@ SCORE_COLUMNS = [
     "infla_role",
     "infla_score",
 ]
+CATEGORY_COLUMNS = [
+    "Stock_symbol",
+    "Publisher",
+    "source_file",
+    "finbert_label",
+    "finbert_role",
+    "infla_label",
+    "infla_role",
+]
+UNION_COLUMNS = ["Date", "Article_title", "Stock_symbol", "Publisher", "source_file", *SCORE_COLUMNS]
 
 
 @dataclass
@@ -234,8 +244,20 @@ def score_filtered_chunks(cfg: Model1Config) -> pd.DataFrame:
         write_parquet_atomic(scored, dest)
         LOGGER.info("Wrote %s (%s rows).", dest, len(scored))
 
-    frames = [pd.read_parquet(_scored_path_for(cfg, path)) for path in paths]
+    # Lsa_summary is dropped here: the full run has millions of rows and the
+    # summaries alone would not fit in Colab's RAM. Later steps never use it.
+    frames = []
+    for path in paths:
+        chunk = pd.read_parquet(_scored_path_for(cfg, path))
+        chunk = chunk.loc[:, [col for col in UNION_COLUMNS if col in chunk.columns]]
+        for column in CATEGORY_COLUMNS:
+            if column in chunk.columns:
+                chunk[column] = chunk[column].astype("string")
+        frames.append(chunk)
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    for column in CATEGORY_COLUMNS:
+        if column in combined.columns:
+            combined[column] = combined[column].astype("category")
     cfg.processed_dir.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(cfg.news_scored_path, index=False)
     LOGGER.info("Wrote union scored file %s (%s rows).", cfg.news_scored_path, len(combined))

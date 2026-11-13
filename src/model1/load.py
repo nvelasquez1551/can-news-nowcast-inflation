@@ -9,6 +9,8 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.model1.config import Model1Config
 from src.model1.filter import (
@@ -227,8 +229,8 @@ def _merge_year_maps(parts: list[dict]) -> dict[str, dict[str, int]]:
     return dict(sorted(merged.items()))
 
 
-def stream_and_filter(cfg: Model1Config) -> pd.DataFrame:
-    """Stream each FNSPID file, write filtered parquet chunks, concat the union."""
+def stream_and_filter(cfg: Model1Config) -> int:
+    """Stream each FNSPID file, write filtered parquet chunks and their union. Returns the row count."""
     cfg.filtered_dir.mkdir(parents=True, exist_ok=True)
     pattern = compile_keyword_pattern(cfg.keywords)
     exclude = compile_exclude_pattern(cfg.exclude_title_patterns)
@@ -239,18 +241,18 @@ def stream_and_filter(cfg: Model1Config) -> pd.DataFrame:
         stats = _process_source_file(cfg, relative_file, pattern, exclude, seen)
         file_stats.append(stats)
 
-    filtered = _concat_filtered_chunks(cfg)
+    n_filtered = _write_filtered_union(cfg)
     year_counts = _merge_year_maps([item.get("year_counts", {}) for item in file_stats])
     _write_year_counts(cfg.year_counts_path, year_counts)
     load_stats = {
         "sample_rows": cfg.sample_rows,
         "files": file_stats,
-        "n_filtered_rows": int(len(filtered)),
+        "n_filtered_rows": n_filtered,
         "year_counts": year_counts,
     }
     _write_json(cfg.load_stats_path, load_stats)
-    LOGGER.info("Filtered union: %s rows -> %s", len(filtered), cfg.news_filtered_path)
-    return filtered
+    LOGGER.info("Filtered union: %s rows -> %s", n_filtered, cfg.news_filtered_path)
+    return n_filtered
 
 
 def _process_source_file(
@@ -372,17 +374,30 @@ def _write_year_counts(path: Path, year_counts: dict[str, dict[str, int]]) -> No
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
-def _concat_filtered_chunks(cfg: Model1Config) -> pd.DataFrame:
-    paths = sorted(cfg.filtered_dir.glob("*/chunk_*.parquet"))
-    if not paths:
-        filtered = pd.DataFrame(columns=KEEP_AFTER_PARSE)
-    else:
-        frames = [pd.read_parquet(path) for path in paths]
-        filtered = (
-            pd.concat(frames, ignore_index=True)
-            if frames
-            else pd.DataFrame(columns=KEEP_AFTER_PARSE)
-        )
+FILTERED_SCHEMA = pa.schema(
+    [
+        (DATE_COL, pa.timestamp("ns", tz="UTC")),
+        (TITLE_COL, pa.string()),
+        ("Stock_symbol", pa.string()),
+        ("Publisher", pa.string()),
+        ("Lsa_summary", pa.string()),
+        (SOURCE_COL, pa.string()),
+    ]
+)
+
+
+def _write_filtered_union(cfg: Model1Config) -> int:
+    """Append every filtered chunk to one parquet file, one chunk in memory at a time."""
     cfg.interim_dir.mkdir(parents=True, exist_ok=True)
-    filtered.to_parquet(cfg.news_filtered_path, index=False)
-    return filtered
+    tmp = cfg.news_filtered_path.with_name(f"{cfg.news_filtered_path.name}.tmp")
+    n_rows = 0
+    with pq.ParquetWriter(tmp, FILTERED_SCHEMA) as writer:
+        for path in sorted(cfg.filtered_dir.glob("*/chunk_*.parquet")):
+            table = pq.read_table(path)
+            if table.num_rows == 0:
+                continue
+            table = table.select(FILTERED_SCHEMA.names).cast(FILTERED_SCHEMA)
+            writer.write_table(table)
+            n_rows += table.num_rows
+    os.replace(tmp, cfg.news_filtered_path)
+    return n_rows
