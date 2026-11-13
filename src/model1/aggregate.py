@@ -23,6 +23,33 @@ INDEX_COLUMNS = [
     "news_n_articles",
 ]
 
+# (prefix in INDEX_COLUMNS, score column, role column, {share column: role})
+_FAMILIES = {
+    "finbert": ("finbert_score", "finbert_role", {"finbert_share_pos": "pos", "finbert_share_neg": "neg"}),
+    "infla": ("infla_score", "infla_role", {"infla_share_up": "up", "infla_share_down": "down"}),
+}
+
+
+def index_columns_for(scored: pd.DataFrame) -> list[str]:
+    """INDEX_COLUMNS restricted to the model families whose score columns exist.
+
+    Both FinBERT and InflaBERT present -> exactly INDEX_COLUMNS (unchanged order).
+    InflaBERT only (models.finbert.enabled=false) -> month, infla_*, news_n_articles.
+    """
+    present = [
+        prefix
+        for prefix, (score_col, role_col, _) in _FAMILIES.items()
+        if score_col in scored.columns and role_col in scored.columns
+    ]
+    if not present:
+        raise ValueError("scored frame has no finbert_* or infla_* score/role columns.")
+    return [
+        column
+        for column in INDEX_COLUMNS
+        if column in ("month", "news_n_articles")
+        or any(column.startswith(f"{prefix}_") for prefix in present)
+    ]
+
 
 def in_cutoff_window(dates: pd.Series, cutoff_day: int) -> pd.Series:
     """Month t uses UTC days 1 through cutoff_day inclusive. Later days are dropped, not rolled forward."""
@@ -48,11 +75,18 @@ def aggregate_monthly(scored: pd.DataFrame, cutoff_day: int) -> pd.DataFrame:
         empty = pd.DataFrame(columns=INDEX_COLUMNS + ["below_min_flag"])
         return empty
 
+    columns = index_columns_for(scored)
+    families = {
+        prefix: spec
+        for prefix, spec in _FAMILIES.items()
+        if f"{prefix}_score_mean" in columns
+    }
+
     work = scored.copy()
     work["Date"] = pd.to_datetime(work["Date"], utc=True, errors="coerce")
     work = work.loc[work["Date"].notna()].copy()
     if work.empty:
-        return pd.DataFrame(columns=INDEX_COLUMNS + ["below_min_flag"])
+        return pd.DataFrame(columns=columns + ["below_min_flag"])
 
     work["in_window"] = in_cutoff_window(work["Date"], cutoff_day)
     work["month"] = pd.to_datetime(month_start(work["Date"]))
@@ -62,7 +96,7 @@ def aggregate_monthly(scored: pd.DataFrame, cutoff_day: int) -> pd.DataFrame:
 
     if window.empty:
         monthly = pd.DataFrame({"month": calendar, "news_n_articles": 0})
-        for column in INDEX_COLUMNS:
+        for column in columns:
             if column not in monthly.columns:
                 monthly[column] = pd.NA
         monthly["news_n_articles"] = 0
@@ -72,35 +106,29 @@ def aggregate_monthly(scored: pd.DataFrame, cutoff_day: int) -> pd.DataFrame:
             cutoff_day,
             n_dropped,
         )
-        return monthly.loc[:, INDEX_COLUMNS]
+        return monthly.loc[:, columns]
 
     grouped = window.groupby("month", sort=True)
-    agg = grouped.agg(
-        finbert_score_mean=("finbert_score", "mean"),
-        infla_score_mean=("infla_score", "mean"),
-        news_n_articles=("Date", "size"),
-    ).reset_index()
+    named = {
+        f"{prefix}_score_mean": (score_col, "mean")
+        for prefix, (score_col, _, _) in families.items()
+    }
+    agg = grouped.agg(**named, news_n_articles=("Date", "size")).reset_index()
+    share_flags = {
+        share_col: window[role_col].eq(role)
+        for _, role_col, share_roles in families.values()
+        for share_col, role in share_roles.items()
+    }
     shares = (
-        window.assign(
-            finbert_share_pos=window["finbert_role"].eq("pos"),
-            finbert_share_neg=window["finbert_role"].eq("neg"),
-            infla_share_up=window["infla_role"].eq("up"),
-            infla_share_down=window["infla_role"].eq("down"),
-        )
-        .groupby("month", sort=True)[
-            [
-                "finbert_share_pos",
-                "finbert_share_neg",
-                "infla_share_up",
-                "infla_share_down",
-            ]
-        ]
+        window.assign(**share_flags)
+        .groupby("month", sort=True)[list(share_flags)]
         .mean()
         .reset_index()
     )
     agg = agg.merge(shares, on="month", how="left")
-    agg["finbert_net_share"] = agg["finbert_share_pos"] - agg["finbert_share_neg"]
-    agg["infla_net_share"] = agg["infla_share_up"] - agg["infla_share_down"]
+    for prefix, (_, _, share_roles) in families.items():
+        pos_col, neg_col = share_roles  # dict order: positive share, negative share
+        agg[f"{prefix}_net_share"] = agg[pos_col] - agg[neg_col]
 
     monthly = pd.DataFrame({"month": calendar}).merge(agg, on="month", how="left")
     monthly["news_n_articles"] = monthly["news_n_articles"].fillna(0).astype(int)
@@ -113,7 +141,7 @@ def aggregate_monthly(scored: pd.DataFrame, cutoff_day: int) -> pd.DataFrame:
 
     n_dropped = int((~work["in_window"]).sum())
     LOGGER.info("Cutoff day %s dropped %s articles after the window.", cutoff_day, n_dropped)
-    return monthly.loc[:, INDEX_COLUMNS]
+    return monthly.loc[:, columns]
 
 
 def find_start_month(
@@ -159,7 +187,8 @@ def apply_start_month(
             min_articles_per_month,
             [pd.Timestamp(ts).strftime("%Y-%m-%d") for ts in flagged],
         )
-    index = work.loc[after, INDEX_COLUMNS].copy()
+    columns = [column for column in INDEX_COLUMNS if column in work.columns]
+    index = work.loc[after, columns].copy()
     return index.reset_index(drop=True), work.reset_index(drop=True)
 
 

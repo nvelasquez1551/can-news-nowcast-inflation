@@ -224,3 +224,6 @@ __marimo__/
 
 # Nowcast model registry (joblib + metadata)
 /models/
+
+# Download logs (news_index): never versioned
+/logs/
