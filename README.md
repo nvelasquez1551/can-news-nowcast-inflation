@@ -74,11 +74,35 @@ compare_forecasts(predictions, target="y", forecasts=["xgb_macro", "xgb_macro+in
 pytest tests/test_model2.py
 ```
 
-## Demo (Streamlit)
+## Local app: API + frontend + model
 
-```bash
-streamlit run app/streamlit_app.py
+Streamlit calls a FastAPI backend; the backend loads the latest model from `models/` and the data from `data/`. Everything runs on your machine.
+
+```
+app/streamlit_app.py  ──HTTP──>  nowcast/api/fast.py  ──>  models/ (registry) + data/raw, data/processed
+     (frontend)                       (backend)
 ```
 
-- **Clasificador de titulares:** type a headline and see the InflaBERT and FinBERT label, score, and probabilities. The models download on first use.
-- **Nowcast vs. dato oficial:** reads `data/processed/model2_predictions.csv` (`month`, `y`, one column per model) and shows the chart and the `compare_forecasts` table. Until Model 2 writes that file, the tab shows a notice.
+**First time** (from the repo root, in the project environment):
+
+1. `make install` — dependencies plus the `nowcast` package. For the headline classifier you also need PyTorch: `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+2. Copy `.env.example` to `.env` and set `FRED_API_KEY` (free at fred.stlouisfed.org > My Account > API Keys).
+3. `make data` — downloads FRED into `data/raw/macro_monthly_raw.csv`.
+4. `make train` — trains the linear model and XGBoost and saves them in `models/`.
+
+**Every time**, in two terminals:
+
+```bash
+make run_api        # http://localhost:8000 (docs at /docs)
+make run_frontend   # http://localhost:8501
+```
+
+What the frontend shows:
+
+- **Nowcast del IPC:** pick a month. Line chart of official CPI vs. nowcast, and a bar chart that splits the change in the nowcast versus the previous month by driver (past inflation, oil, gasoline, expectations, seasonality, news...), plus a one-line summary of why it moved. Contributions add up exactly to the nowcast: coefficient × scaled value for the linear model, XGBoost's own SHAP values for XGBoost.
+- **Titulares del mes:** when `data/processed/news_scored.parquet` (Model 1 output) is present, the headlines of the month with the most inflationary and disinflationary InflaBERT scores.
+- **Clasificador de titulares:** InflaBERT and FinBERT on any headline.
+
+The news driver appears once a model is trained with `USE_NEWS = True` in `nowcast/params.py` and `data/processed/news_index_monthly.csv` exists.
+
+API endpoints: `GET /`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb`, `/headlines?month=YYYY-MM`, `POST /classify`. The frontend reads the API address from `API_URL` (default `http://localhost:8000`), which is what changes when the API moves to the cloud.
