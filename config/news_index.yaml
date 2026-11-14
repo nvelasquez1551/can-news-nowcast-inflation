@@ -1,0 +1,66 @@
+# News index (Alpaca / Benzinga) configuration.
+
+# Broad price-related lexicon: whole-word, case-insensitive, headline OR summary.
+keywords_broad:
+  - inflation
+  - cpi
+  - core cpi
+  - consumer price index
+  - consumer prices
+  - deflation
+  - disinflation
+  - prices
+  - gasoline
+  - gasoline prices
+  - gas prices
+  - food prices
+  - oil
+  - crude
+  - energy prices
+  - wages
+  - wage growth
+  - cost of living
+  - federal reserve
+  - fed
+  - interest rate
+  - rate hike
+  - tariffs
+  - supply chain
+  - ppi
+
+# Final lexicon: TITLE-ONLY, whole-word, case-insensitive.
+keywords_final:
+  - inflation
+  - cpi
+  - core cpi
+  - consumer price index
+  - consumer prices
+  - deflation
+  - disinflation
+  - gas prices
+  - food prices
+  - energy prices
+  - oil prices
+  - wage growth
+  - cost of living
+  - federal reserve
+  - fed
+  - interest rate
+  - rate hike
+  - tariffs
+  - ppi
+  - gasoline prices
+
+# Titles mentioning these entities are dropped (whole phrase, case-insensitive).
+exclude_entities:
+  - CPI Aerostructures
+  - CPI Card Group
+  - CPI Property Group
+  - CPI Corp
+
+# Titles matching any of these regexes are dropped (case-insensitive).
+exclude_title_patterns:
+  - "^REG[ :-]"
+  - "^DIARY-"
+  - "Unusual Options Activity"
+  - "Economic Data Scheduled"

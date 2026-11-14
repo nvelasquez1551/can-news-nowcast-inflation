@@ -17,6 +17,8 @@ dataset:
 
 models:
   finbert:
+    # false = InflaBERT-only run: scoring skips FinBERT and the index has only infla_* columns.
+    enabled: true
     name: ProsusAI/finbert
     revision: 0bc2ac10dda6929bcb1f77ccc43c7ec5c424f031
     # Maps model.config.id2label strings to score roles. Index order is never hard-coded.

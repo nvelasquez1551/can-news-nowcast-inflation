@@ -50,6 +50,13 @@ CATEGORY_COLUMNS = [
 UNION_COLUMNS = ["Date", "Article_title", "Stock_symbol", "Publisher", "source_file", *SCORE_COLUMNS]
 
 
+def active_score_columns(cfg: Model1Config) -> list[str]:
+    """SCORE_COLUMNS for the enabled models (FinBERT columns drop out when disabled)."""
+    if cfg.finbert_enabled:
+        return list(SCORE_COLUMNS)
+    return [column for column in SCORE_COLUMNS if not column.startswith("finbert_")]
+
+
 @dataclass
 class LoadedScorer:
     spec: ModelSpec
@@ -105,21 +112,25 @@ def load_scorer(
 
 
 def load_both_scorers(cfg: Model1Config, device: torch.device | None = None) -> dict[str, LoadedScorer]:
+    """Load the enabled scorers. FinBERT is skipped when models.finbert.enabled is false."""
     device = device or pick_device()
-    return {
-        "finbert": load_scorer(
+    scorers: dict[str, LoadedScorer] = {}
+    if cfg.finbert_enabled:
+        scorers["finbert"] = load_scorer(
             cfg.finbert,
             device=device,
             prefix="finbert",
             prob_columns=FINBERT_PROB_COLUMNS,
-        ),
-        "inflabert": load_scorer(
-            cfg.inflabert,
-            device=device,
-            prefix="infla",
-            prob_columns=INFLA_PROB_COLUMNS,
-        ),
-    }
+        )
+    else:
+        LOGGER.info("FinBERT disabled (models.finbert.enabled=false); InflaBERT only.")
+    scorers["inflabert"] = load_scorer(
+        cfg.inflabert,
+        device=device,
+        prefix="infla",
+        prob_columns=INFLA_PROB_COLUMNS,
+    )
+    return scorers
 
 
 def texts_to_score(frame: pd.DataFrame, *, prefer_lsa_summary: bool) -> list[str]:
@@ -193,7 +204,9 @@ def score_frame(
 ) -> pd.DataFrame:
     texts = texts_to_score(frame, prefer_lsa_summary=cfg.prefer_lsa_summary)
     scored = frame.reset_index(drop=True).copy()
-    for scorer in scorers.values():
+    for key, scorer in scorers.items():
+        if key == "finbert" and not cfg.finbert_enabled:
+            continue
         cols = score_texts(
             texts,
             scorer,
@@ -234,7 +247,7 @@ def score_filtered_chunks(cfg: Model1Config) -> pd.DataFrame:
         chunk = pd.read_parquet(path)
         if chunk.empty:
             scored = chunk.copy()
-            for column in SCORE_COLUMNS:
+            for column in active_score_columns(cfg):
                 if column.endswith("_label") or column.endswith("_role"):
                     scored[column] = pd.Series(dtype="string")
                 else:

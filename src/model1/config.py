@@ -56,6 +56,7 @@ class Model1Config:
     cpi_url: str
     cpi_date_col: str
     cpi_value_col: str
+    finbert_enabled: bool = True
 
     @property
     def sample_key(self) -> str:
@@ -212,4 +213,5 @@ def load_config(
         cpi_url=str(raw["cpi"]["url"]),
         cpi_date_col=str(raw["cpi"]["date_col"]),
         cpi_value_col=str(raw["cpi"]["value_col"]),
+        finbert_enabled=bool(raw["models"]["finbert"].get("enabled", True)),
     )
