@@ -58,7 +58,8 @@ def save_model(pipe: Pipeline,
 def load_model(model_name: str,
                models_dir: Path = params.MODELS_DIR) -> tuple[Pipeline, dict]:
     """Carga el modelo más reciente de `model_name` y su metadata."""
-    candidates = sorted(Path(models_dir).glob(f"{model_name}_*.joblib"))
+    # El timestamp empieza por un dígito: así "linear" no encuentra "linear_news_..."
+    candidates = sorted(Path(models_dir).glob(f"{model_name}_[0-9]*.joblib"))
     if not candidates:
         raise FileNotFoundError(
             f"no saved model '{model_name}' in {models_dir}; run train() first")
