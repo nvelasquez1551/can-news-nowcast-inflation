@@ -40,10 +40,13 @@ models:
     score_positive_role: up
     score_negative_role: down
 
-cutoff_day: 15
+# Last UTC day of month t whose articles count for month t. 31 = whole calendar month
+# (team decision: nowcast at the end of the month). 15 reproduces InflaBERT's setup.
+cutoff_day: 31
 min_articles_per_month: 30
 consecutive_months: 12
-batch_size: 32
+# Texts are length-sorted before batching, so a larger batch stays cheap on a T4.
+batch_size: 128
 max_length: 512
 # Lower this on Colab if a chunk of the 23 GB Nasdaq file OOMs.
 chunksize: 100000
@@ -52,6 +55,8 @@ sample_rows: null
 use_narrow_lexicon: false
 # Default scores headlines. Set true to score Lsa_summary when it is non-empty.
 prefer_lsa_summary: false
+# Half precision on GPU only (about 2x faster on a T4); ignored on CPU.
+use_fp16: true
 sanity_sample_size: 50
 sanity_sample_seed: 42
 
@@ -82,6 +87,15 @@ keywords_broad:
   - tariffs
   - supply chain
   - ppi
+
+# Titles matching any of these regexes are dropped even if they hit a keyword.
+# Targets securities-offering headlines ("XYZ prices $500M notes offering").
+exclude_title_patterns:
+  - '\bprices\s+(us)?\$'
+  - '\bprices\s+(an?\s+)?(upsized\s+)?(public|private|secondary|initial|senior|convertible|underwritten|registered|follow-on)\b'
+  - '\bprices?\b.{0,60}\boffering\b'
+  - '\bipo\b.{0,40}\bprices?\b'
+  - '\bprices?\b.{0,20}\bipo\b'
 
 # InflaBERT paper lexicon; robustness switch only.
 keywords_narrow:

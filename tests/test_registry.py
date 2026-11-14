@@ -40,3 +40,14 @@ def test_load_returns_latest_and_saves_never_collide(table, tmp_path):
 def test_load_missing_model_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_model("linear", models_dir=tmp_path)
+
+
+def test_load_does_not_confuse_linear_with_linear_news(table, tmp_path):
+    train, _ = split_by_date(table)
+    X = train[params.FEATURES]
+    pipe = build_model("linear").fit(X, train["y"])
+    save_model(pipe, "linear", X, models_dir=tmp_path)
+    save_model(pipe, "linear_news", X, models_dir=tmp_path)  # más reciente
+
+    _, meta = load_model("linear", models_dir=tmp_path)
+    assert meta["model_name"] == "linear"

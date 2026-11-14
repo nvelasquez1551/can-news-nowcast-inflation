@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.model1.config import Model1Config
-from src.model1.filter import compile_keyword_pattern, price_related_mask
+from src.model1.filter import (
+    compile_exclude_pattern,
+    compile_keyword_pattern,
+    price_related_mask,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -73,6 +80,13 @@ def _empty_manifest(relative_file: str, sample_rows: int | None) -> dict:
     }
 
 
+def write_parquet_atomic(frame: pd.DataFrame, path: Path) -> None:
+    """Write to a temp file, then rename, so a Drive disconnect never leaves a half-written chunk."""
+    tmp = path.with_name(f"{path.name}.tmp")
+    frame.to_parquet(tmp, index=False)
+    os.replace(tmp, path)
+
+
 def _usable_manifest(path: Path, sample_rows: int | None) -> dict | None:
     """Return a manifest only when sample_rows matches this run."""
     if not path.exists():
@@ -119,19 +133,35 @@ def _add_year_counts(store: dict, before: pd.Series, after: pd.Series) -> None:
         bucket["after"] += int(count)
 
 
+def _committed_chunks(cfg: Model1Config, out_dir: Path) -> list[Path]:
+    """Chunks recorded in the manifest. A chunk written just before a crash, but not
+    yet in the manifest, is rewritten on resume and must not seed `seen`."""
+    man_path = out_dir / "manifest.json"
+    if not man_path.exists():
+        return []
+    manifest = _read_json(man_path)
+    if manifest.get("sample_rows") != cfg.sample_rows:
+        return []
+    n_committed = int(manifest.get("chunks_written", 0))
+    return [out_dir / f"chunk_{idx:05d}.parquet" for idx in range(n_committed)]
+
+
 def _rebuild_seen(cfg: Model1Config) -> set[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
     if not cfg.filtered_dir.exists():
         return seen
-    for parquet_path in sorted(cfg.filtered_dir.glob("*/chunk_*.parquet")):
-        chunk = pd.read_parquet(parquet_path, columns=[DATE_COL, TITLE_COL])
-        if chunk.empty:
-            continue
-        dates = pd.to_datetime(chunk[DATE_COL], utc=True, errors="coerce")
-        for date, title in zip(dates, chunk[TITLE_COL].astype(str), strict=False):
-            if pd.isna(date):
+    for out_dir in sorted(path for path in cfg.filtered_dir.iterdir() if path.is_dir()):
+        for parquet_path in _committed_chunks(cfg, out_dir):
+            if not parquet_path.exists():
                 continue
-            seen.add((date.date().isoformat(), title))
+            chunk = pd.read_parquet(parquet_path, columns=[DATE_COL, TITLE_COL])
+            if chunk.empty:
+                continue
+            dates = pd.to_datetime(chunk[DATE_COL], utc=True, errors="coerce")
+            for date, title in zip(dates, chunk[TITLE_COL].astype(str), strict=False):
+                if pd.isna(date):
+                    continue
+                seen.add((date.date().isoformat(), title))
     LOGGER.info("Rebuilt %s seen (date, title) keys from existing filtered chunks.", len(seen))
     return seen
 
@@ -141,6 +171,7 @@ def _clean_chunk(
     *,
     relative_file: str,
     pattern,
+    exclude,
     seen: set[tuple[str, str]],
 ) -> tuple[pd.DataFrame, dict, pd.Series, pd.Series]:
     stats = {
@@ -157,39 +188,30 @@ def _clean_chunk(
     stats["n_missing_date_or_title"] = int((~valid).sum())
     work = work.loc[valid].copy()
     work[TITLE_COL] = titles.loc[valid]
+    stats["n_before_filter"] = int(len(work))
+    before_dates = work[DATE_COL].copy()
 
-    keys = [
-        (ts.date().isoformat(), title)
-        for ts, title in zip(work[DATE_COL], work[TITLE_COL], strict=False)
-    ]
+    if work.empty:
+        empty = pd.DataFrame(columns=KEEP_AFTER_PARSE)
+        return empty, stats, before_dates, pd.Series(dtype="datetime64[ns, UTC]")
+
+    work = work.loc[price_related_mask(work, pattern, exclude=exclude)].copy()
+
+    # Dedupe after the filter: `seen` then holds only price-related keys, which keeps
+    # memory small on the full 15.7M-row run.
     keep_mask = []
-    n_dup = 0
-    for key in keys:
+    for ts, title in zip(work[DATE_COL], work[TITLE_COL], strict=False):
+        key = (ts.date().isoformat(), title)
         if key in seen:
-            n_dup += 1
             keep_mask.append(False)
         else:
             seen.add(key)
             keep_mask.append(True)
-    stats["n_duplicates"] = n_dup
+    stats["n_duplicates"] = keep_mask.count(False)
     work = work.loc[keep_mask].copy()
-    stats["n_before_filter"] = int(len(work))
-    before_dates = work[DATE_COL].copy() if not work.empty else pd.Series(
-        dtype="datetime64[ns, UTC]"
-    )
-
-    if work.empty:
-        empty = pd.DataFrame(columns=KEEP_AFTER_PARSE)
-        stats["n_after_filter"] = 0
-        return empty, stats, before_dates, pd.Series(dtype="datetime64[ns, UTC]")
-
-    keep = price_related_mask(work, pattern)
-    work = work.loc[keep].copy()
     work[SOURCE_COL] = relative_file
     stats["n_after_filter"] = int(len(work))
-    after_dates = work[DATE_COL].copy() if not work.empty else pd.Series(
-        dtype="datetime64[ns, UTC]"
-    )
+    after_dates = work[DATE_COL].copy()
     return (
         work.loc[:, [col for col in KEEP_AFTER_PARSE if col in work.columns]],
         stats,
@@ -207,35 +229,37 @@ def _merge_year_maps(parts: list[dict]) -> dict[str, dict[str, int]]:
     return dict(sorted(merged.items()))
 
 
-def stream_and_filter(cfg: Model1Config) -> pd.DataFrame:
-    """Stream each FNSPID file, write filtered parquet chunks, concat the union."""
+def stream_and_filter(cfg: Model1Config) -> int:
+    """Stream each FNSPID file, write filtered parquet chunks and their union. Returns the row count."""
     cfg.filtered_dir.mkdir(parents=True, exist_ok=True)
     pattern = compile_keyword_pattern(cfg.keywords)
+    exclude = compile_exclude_pattern(cfg.exclude_title_patterns)
     seen = _rebuild_seen(cfg)
     file_stats: list[dict] = []
 
     for relative_file in cfg.dataset_files:
-        stats = _process_source_file(cfg, relative_file, pattern, seen)
+        stats = _process_source_file(cfg, relative_file, pattern, exclude, seen)
         file_stats.append(stats)
 
-    filtered = _concat_filtered_chunks(cfg)
+    n_filtered = _write_filtered_union(cfg)
     year_counts = _merge_year_maps([item.get("year_counts", {}) for item in file_stats])
     _write_year_counts(cfg.year_counts_path, year_counts)
     load_stats = {
         "sample_rows": cfg.sample_rows,
         "files": file_stats,
-        "n_filtered_rows": int(len(filtered)),
+        "n_filtered_rows": n_filtered,
         "year_counts": year_counts,
     }
     _write_json(cfg.load_stats_path, load_stats)
-    LOGGER.info("Filtered union: %s rows -> %s", len(filtered), cfg.news_filtered_path)
-    return filtered
+    LOGGER.info("Filtered union: %s rows -> %s", n_filtered, cfg.news_filtered_path)
+    return n_filtered
 
 
 def _process_source_file(
     cfg: Model1Config,
     relative_file: str,
     pattern,
+    exclude,
     seen: set[tuple[str, str]],
 ) -> dict:
     out_dir = source_dir(cfg, relative_file)
@@ -294,15 +318,14 @@ def _process_source_file(
 
         n_raw = int(len(chunk))
         cleaned, stats, before_dates, after_dates = _clean_chunk(
-            chunk, relative_file=relative_file, pattern=pattern, seen=seen
+            chunk, relative_file=relative_file, pattern=pattern, exclude=exclude, seen=seen
         )
         _add_year_counts(year_counts, before_dates, after_dates)
 
         chunk_path = out_dir / f"chunk_{chunks_written:05d}.parquet"
-        if cleaned.empty:
-            pd.DataFrame(columns=KEEP_AFTER_PARSE).to_parquet(chunk_path, index=False)
-        else:
-            cleaned.to_parquet(chunk_path, index=False)
+        write_parquet_atomic(
+            pd.DataFrame(columns=KEEP_AFTER_PARSE) if cleaned.empty else cleaned, chunk_path
+        )
 
         chunks_written += 1
         raw_rows_read += n_raw
@@ -351,17 +374,30 @@ def _write_year_counts(path: Path, year_counts: dict[str, dict[str, int]]) -> No
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
-def _concat_filtered_chunks(cfg: Model1Config) -> pd.DataFrame:
-    paths = sorted(cfg.filtered_dir.glob("*/chunk_*.parquet"))
-    if not paths:
-        filtered = pd.DataFrame(columns=KEEP_AFTER_PARSE)
-    else:
-        frames = [pd.read_parquet(path) for path in paths]
-        filtered = (
-            pd.concat(frames, ignore_index=True)
-            if frames
-            else pd.DataFrame(columns=KEEP_AFTER_PARSE)
-        )
+FILTERED_SCHEMA = pa.schema(
+    [
+        (DATE_COL, pa.timestamp("ns", tz="UTC")),
+        (TITLE_COL, pa.string()),
+        ("Stock_symbol", pa.string()),
+        ("Publisher", pa.string()),
+        ("Lsa_summary", pa.string()),
+        (SOURCE_COL, pa.string()),
+    ]
+)
+
+
+def _write_filtered_union(cfg: Model1Config) -> int:
+    """Append every filtered chunk to one parquet file, one chunk in memory at a time."""
     cfg.interim_dir.mkdir(parents=True, exist_ok=True)
-    filtered.to_parquet(cfg.news_filtered_path, index=False)
-    return filtered
+    tmp = cfg.news_filtered_path.with_name(f"{cfg.news_filtered_path.name}.tmp")
+    n_rows = 0
+    with pq.ParquetWriter(tmp, FILTERED_SCHEMA) as writer:
+        for path in sorted(cfg.filtered_dir.glob("*/chunk_*.parquet")):
+            table = pq.read_table(path)
+            if table.num_rows == 0:
+                continue
+            table = table.select(FILTERED_SCHEMA.names).cast(FILTERED_SCHEMA)
+            writer.write_table(table)
+            n_rows += table.num_rows
+    os.replace(tmp, cfg.news_filtered_path)
+    return n_rows

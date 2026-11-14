@@ -13,14 +13,22 @@ from src.model1.aggregate import (
     find_start_month,
     in_cutoff_window,
 )
-from src.model1.filter import compile_keyword_pattern, matches_keywords, price_related_mask
+from src.model1.config import load_config
+from src.model1.filter import (
+    compile_exclude_pattern,
+    compile_keyword_pattern,
+    matches_keywords,
+    price_related_mask,
+)
 from src.model1.labels import (
+    FINBERT_PROB_COLUMNS,
     assert_valid_probs,
     assert_valid_scores,
     decode_logits,
     resolve_role_map,
     softmax,
 )
+from src.model1.load import _clean_chunk, _rebuild_seen, write_parquet_atomic
 
 BROAD_KEYWORDS = [
     "inflation",
@@ -243,3 +251,120 @@ def test_apply_start_month_keeps_later_gaps():
     flagged = full.loc[full["below_min_flag"], "month"].tolist()
     assert flagged == [pd.Timestamp("2011-02-01")]
     assert 5 in set(index["news_n_articles"].tolist())
+
+
+EXCLUDE_PATTERNS = load_config().exclude_title_patterns
+
+
+def test_exclude_patterns_drop_offering_headlines_only():
+    pattern = compile_keyword_pattern(["prices", "inflation"])
+    exclude = compile_exclude_pattern(EXCLUDE_PATTERNS)
+    frame = pd.DataFrame(
+        {
+            "Article_title": [
+                "Apple Prices $5 Billion Senior Notes Offering",
+                "XYZ prices public offering of common stock",
+                "Tech IPO prices above range",
+                "Gasoline prices soar",
+                "Consumer prices rise; Treasury notes rally",
+            ],
+            "Lsa_summary": ["Inflation risk noted.", "", "", "", ""],
+        }
+    )
+    mask = price_related_mask(frame, pattern, exclude=exclude)
+    assert mask.tolist() == [False, False, False, True, True]
+    assert compile_exclude_pattern([]) is None
+
+
+def test_cutoff_31_keeps_the_whole_month():
+    rows = [
+        _article("2010-01-31 23:59:00+00:00", "last day of january", "pos", "up", 0.4, 0.5),
+        _article("2010-02-28 12:00:00+00:00", "last day of february", "neg", "down", -0.2, -0.3),
+    ]
+    monthly = aggregate_monthly(pd.DataFrame(rows), cutoff_day=31)
+    assert monthly["news_n_articles"].tolist() == [1, 1]
+
+
+def _raw_chunk(rows):
+    return pd.DataFrame(
+        rows, columns=["Date", "Article_title", "Stock_symbol", "Publisher", "Lsa_summary"]
+    )
+
+
+def test_clean_chunk_dedupes_only_price_related_rows():
+    pattern = compile_keyword_pattern(["inflation"])
+    seen: set[tuple[str, str]] = set()
+    chunk = _raw_chunk(
+        [
+            ["2010-01-05 10:00:00 UTC", "Inflation picks up", "A", "p", ""],
+            ["2010-01-05 18:00:00 UTC", "Inflation picks up", "B", "p", ""],
+            ["2010-01-05 10:00:00 UTC", "Earnings beat", "A", "p", ""],
+            ["2010-01-05 10:00:00 UTC", "Earnings beat", "B", "p", ""],
+            [None, "Inflation without a date", "A", "p", ""],
+        ]
+    )
+    cleaned, stats, _, _ = _clean_chunk(
+        chunk, relative_file="f.csv", pattern=pattern, exclude=None, seen=seen
+    )
+    assert cleaned["Article_title"].tolist() == ["Inflation picks up"]
+    assert stats["n_missing_date_or_title"] == 1
+    assert stats["n_before_filter"] == 4
+    assert stats["n_duplicates"] == 1
+    assert stats["n_after_filter"] == 1
+    assert seen == {("2010-01-05", "Inflation picks up")}
+
+
+def test_rebuild_seen_ignores_chunk_not_yet_in_manifest(tmp_path):
+    cfg = load_config(data_root=tmp_path, reports_dir=tmp_path / "reports")
+    out_dir = cfg.filtered_dir / "nasdaq"
+    out_dir.mkdir(parents=True)
+    dates = pd.to_datetime(["2010-01-05", "2010-01-06"], utc=True)
+    for idx, (date, title) in enumerate(zip(dates, ["committed", "written before crash"])):
+        write_parquet_atomic(
+            pd.DataFrame({"Date": [date], "Article_title": [title]}),
+            out_dir / f"chunk_{idx:05d}.parquet",
+        )
+    (out_dir / "manifest.json").write_text(
+        '{"sample_rows": null, "chunks_written": 1}', encoding="utf-8"
+    )
+    assert _rebuild_seen(cfg) == {("2010-01-05", "committed")}
+    assert not list(out_dir.glob("*.tmp"))
+
+
+def test_score_texts_restores_input_order_after_length_sort():
+    torch = pytest.importorskip("torch")
+    from src.model1.score import LoadedScorer, score_texts
+
+    class WordTokenizer:
+        def __call__(self, texts, **_):
+            width = max(len(text.split()) for text in texts)
+            ids = [[1] * len(text.split()) + [0] * (width - len(text.split())) for text in texts]
+            return {"input_ids": torch.tensor(ids, dtype=torch.float32)}
+
+    class CountModel:
+        def __call__(self, input_ids):
+            n_words = input_ids.sum(dim=1, keepdim=True)
+            logits = torch.cat([n_words, torch.zeros_like(n_words), torch.zeros_like(n_words)], dim=1)
+            return type("Out", (), {"logits": logits})()
+
+    role_map = resolve_role_map(
+        {0: "positive", 1: "negative", 2: "neutral"},
+        {"pos": ["positive"], "neg": ["negative"], "neu": ["neutral"]},
+        positive_role="pos",
+        negative_role="neg",
+    )
+    scorer = LoadedScorer(
+        spec=None,
+        tokenizer=WordTokenizer(),
+        model=CountModel(),
+        role_map=role_map,
+        device=torch.device("cpu"),
+        prefix="finbert",
+        prob_columns=FINBERT_PROB_COLUMNS,
+    )
+    texts = ["one two three four", "one", "one two three", "one two"]
+    scored = score_texts(texts, scorer, batch_size=2, max_length=16)
+    word_counts = [len(text.split()) for text in texts]
+    # More words -> larger positive logit -> larger score, in the original order.
+    assert np.argsort(scored["finbert_score"].to_numpy()).tolist() == np.argsort(word_counts).tolist()
+    assert len(scored) == len(texts)

@@ -17,6 +17,14 @@ def compile_keyword_pattern(keywords: list[str]) -> re.Pattern[str]:
     return re.compile("|".join(parts), flags=re.IGNORECASE)
 
 
+def compile_exclude_pattern(patterns: list[str]) -> re.Pattern[str] | None:
+    """Case-insensitive alternation of raw regexes; None when the list is empty."""
+    cleaned = [str(p).strip() for p in patterns if str(p).strip()]
+    if not cleaned:
+        return None
+    return re.compile("|".join(f"(?:{p})" for p in cleaned), flags=re.IGNORECASE)
+
+
 def matches_keywords(text: object, pattern: re.Pattern[str]) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
@@ -27,10 +35,11 @@ def price_related_mask(
     frame: pd.DataFrame,
     pattern: re.Pattern[str],
     *,
+    exclude: re.Pattern[str] | None = None,
     title_col: str = "Article_title",
     summary_col: str = "Lsa_summary",
 ) -> pd.Series:
-    """True when the title or the LSA summary matches the lexicon."""
+    """True when the title or the LSA summary matches the lexicon and the title is not excluded."""
     titles = frame[title_col] if title_col in frame.columns else pd.Series("", index=frame.index)
     if summary_col in frame.columns:
         summaries = frame[summary_col]
@@ -38,4 +47,7 @@ def price_related_mask(
         summaries = pd.Series("", index=frame.index)
     title_hit = titles.map(lambda text: matches_keywords(text, pattern))
     summary_hit = summaries.map(lambda text: matches_keywords(text, pattern))
-    return title_hit | summary_hit
+    keep = title_hit | summary_hit
+    if exclude is not None:
+        keep &= ~titles.map(lambda text: matches_keywords(text, exclude))
+    return keep

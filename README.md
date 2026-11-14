@@ -2,6 +2,8 @@
 
 Nowcasting US monthly inflation with financial news: an NLP classifier builds a news index that feeds an ML model, compared with and without news.
 
+Guía en español (qué hace cada parte y qué se ha hecho): [docs/GUIA_DEL_PROYECTO.md](docs/GUIA_DEL_PROYECTO.md).
+
 Specs: [Model 1](docs/specs/model-1-news-sentiment.md) (news indexes, implemented below) · [Model 2](docs/specs/model-2-cpi-nowcast.md) (CPI nowcast, in progress).
 
 Model 2 code: the [`nowcast`](nowcast/README.md) package (`pip install -e ".[dev]"`).
@@ -12,9 +14,9 @@ Model 1 does not predict CPI. It streams FNSPID headlines, keeps price-related a
 
 `data/processed/news_index_monthly.csv`
 
-Month *t* uses only articles published from UTC day 1 through `cutoff_day` (default **15**) of month *t*. Later articles in that month are dropped; they are not rolled into month *t+1*. The sample starts at the first month **S** that begins 12 consecutive months with at least 30 in-window articles.
+Month *t* uses articles published from UTC day 1 through `cutoff_day` of month *t*. The default is **31**, the whole calendar month: the team nowcasts at the end of the month. Set `cutoff_day: 15` to reproduce InflaBERT's mid-month setup; later articles are then dropped, not rolled into month *t+1*. The sample starts at the first month **S** that begins 12 consecutive months with at least 30 in-window articles.
 
-All paths and parameters live in [`config/model1.yaml`](config/model1.yaml). Useful knobs: `cutoff_day`, `keywords_broad` / `use_narrow_lexicon`, `prefer_lsa_summary`, `sample_rows`, `chunksize`, `batch_size`.
+All paths and parameters live in [`config/model1.yaml`](config/model1.yaml). Useful knobs: `cutoff_day`, `keywords_broad` / `use_narrow_lexicon`, `exclude_title_patterns` (drops securities-offering headlines such as "XYZ prices $500M notes offering"), `prefer_lsa_summary`, `sample_rows`, `chunksize`, `batch_size`, `use_fp16`.
 
 ### Run on Google Colab (GPU)
 
@@ -55,3 +57,67 @@ Tests use tiny synthetic frames and mock `id2label` maps. They do not download F
 - Year coverage per file before trusting the union (`sample_rows: 50000` does not answer this).
 - Whether a 12-month streak at 30 articles exists, and which later months fall below 30.
 - Fill `reports/sanity_sample.csv` by hand (`human_price_direction`); the pipeline leaves it blank.
+
+## Model 2: evaluation helpers
+
+Feature construction and model fitting for the CPI nowcast live in the team notebooks (see the [Model 2 spec](docs/specs/model-2-cpi-nowcast.md)). `src/model2/evaluate.py` holds the shared metrics:
+
+- `rmse`, `mae`
+- `diebold_mariano(errors_a, errors_b, horizon=1)`: Diebold-Mariano test with the Harvey-Leybourne-Newbold correction. A positive statistic means forecast B is more accurate.
+- `compare_forecasts(frame, target="y", forecasts=[...], baseline="ar")`: one row per forecast with RMSE, MAE, and DM against the baseline, on the months all forecasts share.
+
+```python
+from src.model2.evaluate import compare_forecasts
+
+compare_forecasts(predictions, target="y", forecasts=["xgb_macro", "xgb_macro+infla"], baseline="ar")
+```
+
+```bash
+pytest tests/test_model2.py
+```
+
+## Local app: API + frontend + model
+
+Streamlit calls a FastAPI backend; the backend loads the latest model from `models/` and the data from `data/`. Everything runs on your machine.
+
+```
+app/streamlit_app.py  ──HTTP──>  nowcast/api/fast.py  ──>  models/ (registry) + data/raw, data/processed
+     (frontend)                       (backend)
+```
+
+**First time** (from the repo root, in the project environment):
+
+1. `make install` — dependencies plus the `nowcast` package. For the headline classifier you also need PyTorch: `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+2. Copy `.env.example` to `.env` and set `FRED_API_KEY` (free at fred.stlouisfed.org > My Account > API Keys).
+3. `make data` — downloads FRED into `data/raw/macro_monthly_raw.csv`.
+4. `make train` — trains the linear model and XGBoost and saves them in `models/`.
+5. `make train_news` — same models with the Model 1 news index (`linear_news`, `xgb_news`). Needs `data/processed/news_index_monthly.csv`; copy `news_scored.parquet` there too for the headlines.
+
+**Every time**, in two terminals:
+
+```bash
+make run_api        # http://localhost:8000 (docs at /docs)
+make run_frontend   # http://localhost:8501
+```
+
+What the frontend shows:
+
+- **Nowcast del IPC:** pick a month. Line chart of official CPI vs. nowcast, and a bar chart that splits the change in the nowcast versus the previous month by driver (past inflation, oil, gasoline, expectations, seasonality, news...), plus a one-line summary of why it moved. Contributions add up exactly to the nowcast: coefficient × scaled value for the linear model, XGBoost's own SHAP values for XGBoost.
+- **Titulares del mes:** when `data/processed/news_scored.parquet` (Model 1 output) is present, the headlines of the month with the most inflationary and disinflationary InflaBERT scores.
+- **Busca un titular:** type a few words and pick one of the matching headlines from the Model 1 data to see its InflaBERT label. Any new text can also be classified when PyTorch is installed.
+
+- **¿Ayudan las noticias?:** error in 2020–2023 of the same model with and without news (saved models trained through 2019), with a Diebold-Mariano p-value.
+
+When the news models exist, the app uses `linear_news` by default and the bars include a **Noticias** driver; the other models can be picked under *Ajustes*.
+
+API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb|linear_news|xgb_news`, `/comparison?model=linear|xgb`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...`, `POST /classify`. The frontend reads the API address from `API_URL` (`make run_frontend` sets it to `http://localhost:8000`), which is what changes when the API moves to the cloud.
+
+### Without a separate API (Streamlit Cloud)
+
+When `API_URL` is not set, the frontend runs the API inside the Streamlit process with the data committed in `demo_data/` (FRED macro table, Model 1 monthly index, and a slim copy of the scored headlines) and trains the models on the first load, which takes about a minute. That is how the app runs on Streamlit Community Cloud:
+
+1. share.streamlit.io > **Create app** > deploy from GitHub.
+2. Repository `nvelasquez1551/can-news-nowcast-inflation`, branch `main`, main file `app/streamlit_app.py`.
+3. Deploy. Do not set `API_URL`.
+
+PyTorch is not installed there, so new text cannot be classified; headline search still works. Refresh `demo_data/` after a new Model 1 or FRED run.

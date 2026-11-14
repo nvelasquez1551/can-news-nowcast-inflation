@@ -89,3 +89,18 @@ def test_evaluate_rejects_models_with_other_features(sandbox, monkeypatch):
                         lambda use_news: params.NUMERIC_FEATURES)
     with pytest.raises(AssertionError, match="saved features differ"):
         main.evaluate()
+
+
+def test_train_with_news_saves_separate_models(sandbox, monkeypatch):
+    news = make_raw()[[]].assign(**{col: 0.1 for col in params.NEWS_COLS})
+    news.iloc[::2] = -0.2
+    monkeypatch.setattr(main, "load_news_index", lambda: news)
+    monkeypatch.setattr(params, "CV_RESULTS_NEWS_PATH", sandbox / "cv_news.csv")
+
+    cv = main.train(use_news=True)
+    assert list(cv["model"]) == ["linear_news", "xgb_news"]
+    assert params.CV_RESULTS_NEWS_PATH.exists() and not params.CV_RESULTS_PATH.exists()
+    _, meta = main.load_model("linear_news")
+    assert meta["features"] == params.FEATURES + params.NEWS_COLS
+    with pytest.raises(FileNotFoundError):
+        main.load_model("linear")
