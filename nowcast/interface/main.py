@@ -1,6 +1,8 @@
 """Interfaz: solo orquesta train(), evaluate() y predict(). Sin lógica propia.
 
     python -m nowcast.interface.main            # train + predict
+    python -c "from nowcast.interface.main import train; train(use_news=True)"
+                                                # modelos con noticias: linear_news, xgb_news
     RUN_TEST=1 python -m nowcast.interface.main # además evalúa en 2020-2023
 """
 
@@ -15,38 +17,48 @@ from nowcast.ml_logic.model import (build_model, compute_metrics, cross_validate
 from nowcast.ml_logic.registry import load_model, save_model
 
 
-def load_table() -> tuple[pd.DataFrame, list[str]]:
-    """Tabla del modelo y columnas de features según USE_NEWS."""
-    news = load_news_index() if params.USE_NEWS else None
-    table = build_model_table(load_raw_data(), news=news, use_news=params.USE_NEWS)
-    return table, get_feature_columns(params.USE_NEWS)
+def load_table(use_news: bool | None = None) -> tuple[pd.DataFrame, list[str]]:
+    """Tabla del modelo y columnas de features. use_news=None usa params.USE_NEWS."""
+    use_news = params.USE_NEWS if use_news is None else use_news
+    news = load_news_index() if use_news else None
+    table = build_model_table(load_raw_data(), news=news, use_news=use_news)
+    return table, get_feature_columns(use_news)
 
 
-def train() -> pd.DataFrame:
-    """CV en train (1999-2019), ajuste final y guardado. No toca el test."""
-    table, cols = load_table()
+def train(use_news: bool | None = None) -> pd.DataFrame:
+    """CV en train (hasta 2019), ajuste final y guardado. No toca el test.
+
+    Con noticias, los modelos se guardan como linear_news y xgb_news, así que
+    los modelos macro (linear, xgb) siguen disponibles para comparar.
+    """
+    use_news = params.USE_NEWS if use_news is None else use_news
+    table, cols = load_table(use_news)
+    if use_news and not set(params.NEWS_COLS) <= set(table.columns):
+        raise FileNotFoundError(f"use_news=True needs {params.NEWS_INDEX_PATH}")
+    suffix = params.NEWS_MODEL_SUFFIX if use_news else ""
     train_df, _ = split_by_date(table)
     X, y = train_df[cols], train_df[params.TARGET]
 
     # Regresión lineal: sin hiperparámetros
     linear_folds = cross_validate(build_model("linear", cols), X, y)
     linear = build_model("linear", cols).fit(X, y)
-    save_model(linear, "linear", X, extra={
+    save_model(linear, f"linear{suffix}", X, extra={
         "cv_rmse_mean": linear_folds.mean(), "cv_rmse_std": linear_folds.std()})
 
     # XGBoost: grid search con TimeSeriesSplit
     xgb = search_summary(grid_search(X, y, cols))
     xgb_model = build_model("xgb", cols, xgb["best_params"]).fit(X, y)
-    save_model(xgb_model, "xgb", X, xgb["best_params"], extra={
+    save_model(xgb_model, f"xgb{suffix}", X, xgb["best_params"], extra={
         "cv_rmse_mean": xgb["cv_rmse_mean"], "cv_rmse_std": xgb["cv_rmse_std"]})
 
     cv_results = pd.DataFrame({
-        "model": ["linear", "xgb"],
+        "model": [f"linear{suffix}", f"xgb{suffix}"],
         "cv_rmse_mean": [linear_folds.mean(), xgb["cv_rmse_mean"]],
         "cv_rmse_std": [linear_folds.std(), xgb["cv_rmse_std"]],
     })
-    params.CV_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    cv_results.to_csv(params.CV_RESULTS_PATH, index=False)
+    cv_path = params.CV_RESULTS_NEWS_PATH if use_news else params.CV_RESULTS_PATH
+    cv_path.parent.mkdir(parents=True, exist_ok=True)
+    cv_results.to_csv(cv_path, index=False)
     print("XGBoost best params:", xgb["best_params"])
     print(cv_results.round(4).to_string(index=False))
     return cv_results

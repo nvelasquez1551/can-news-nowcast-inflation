@@ -32,6 +32,7 @@ NEWS_INDEX_PATH = PROCESSED_DATA_DIR / "news_index_monthly.csv"  # salida del Mo
 
 # Salidas del paquete (nombres nuevos: nunca pisan los archivos v1)
 CV_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results.csv"
+CV_RESULTS_NEWS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results_news.csv"
 FIXED_PREDICTIONS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_predictions.csv"
 FIXED_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_results.csv"
 FIXED_DM_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_dm_tests.csv"
@@ -116,6 +117,8 @@ LEAKAGE_TEST_DATES = ["2005-06-01", "2008-10-01", "2015-01-01",
 USE_NEWS = False
 NEWS_DATE_COL = "month"
 NEWS_COLS = ["infla_score_mean", "infla_net_share"]
+# Los modelos entrenados con noticias se guardan como <modelo>_news (p. ej. linear_news)
+NEWS_MODEL_SUFFIX = "_news"
 
 # ---------------------------------------------------------------------------
 # Split temporal (notebook 02)

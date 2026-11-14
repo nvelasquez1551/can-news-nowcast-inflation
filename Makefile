@@ -2,7 +2,7 @@
 PORT ?= 8000
 
 help:
-	@echo "make install | data | train | run_api | run_frontend | test"
+	@echo "make install | data | train | train_news | run_api | run_frontend | test"
 
 install:
 	pip install -r requirements.txt
@@ -13,6 +13,9 @@ data:
 
 train:
 	python -m nowcast.interface.main
+
+train_news:
+	python -c "from nowcast.interface.main import train; train(use_news=True)"
 
 run_api:
 	uvicorn nowcast.api.fast:app --reload --port $(PORT)
