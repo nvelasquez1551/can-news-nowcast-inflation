@@ -17,8 +17,11 @@ nowcast/
     preprocessor.py    # lo único que se ajusta con train: StandardScaler + OneHotEncoder(month)
     model.py           # pipelines, CV, grid search, evaluación, Diebold-Mariano, expanding refit
     registry.py        # guardar/cargar modelos (joblib) + metadata (json)
+    explain.py         # cuánto aporta cada feature y por qué cambió el nowcast frente al mes anterior
   interface/
     main.py            # train(), evaluate(), predict(): solo orquesta
+  api/
+    fast.py            # API FastAPI para el frontend (ver README principal)
 ```
 
 ## Instalación

@@ -227,3 +227,5 @@ __marimo__/
 
 # Download logs (news_index): never versioned
 /logs/
+# Model outputs written when the app trains on demo_data
+demo_data/processed/nowcast_*.csv
