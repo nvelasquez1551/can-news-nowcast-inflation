@@ -19,9 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 FRED_API_KEY = os.environ.get("FRED_API_KEY")  # nunca se versiona (.env)
 
-RAW_DATA_DIR = ROOT / "data" / "raw"
-PROCESSED_DATA_DIR = ROOT / "data" / "processed"
-MODELS_DIR = ROOT / "models"  # registry (joblib + metadata json), ignorado por git
+# NOWCAST_DATA_DIR / NOWCAST_MODELS_DIR cambian las carpetas (p. ej. en Streamlit Cloud)
+DATA_DIR = Path(os.environ.get("NOWCAST_DATA_DIR", ROOT / "data"))
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+MODELS_DIR = Path(os.environ.get("NOWCAST_MODELS_DIR", ROOT / "models"))  # registry, ignorado por git
 # Archivos del registry: models/<modelo>_<timestamp>.joblib (+ .json)
 # Ancho fijo y de mayor a menor unidad: el orden alfabético = orden temporal.
 # Microsegundos (%f) para que dos guardados seguidos no choquen.

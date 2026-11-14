@@ -1,18 +1,33 @@
 """Frontend del nowcast. Solo llama a la API (nowcast/api/fast.py) y muestra los resultados.
 
-    streamlit run app/streamlit_app.py
+    API_URL=http://localhost:8000 streamlit run app/streamlit_app.py   # con la API aparte
+    streamlit run app/streamlit_app.py                                 # API dentro de la app
+
+Sin API_URL (como en Streamlit Cloud) la API corre dentro de la app con los datos de
+demo_data/, y los modelos se entrenan al arrancar.
 """
 
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 
-API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+API_URL = os.environ.get("API_URL", "").rstrip("/")
+EMBEDDED = not API_URL
+if EMBEDDED:
+    # Antes de importar nowcast: params lee estas rutas al importarse
+    os.environ.setdefault("NOWCAST_DATA_DIR", str(REPO_ROOT / "demo_data"))
+    os.environ.setdefault("NOWCAST_MODELS_DIR", str(Path(tempfile.gettempdir()) / "nowcast_models"))
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
 
 NAVY, AMBER, GREY = "#14273d", "#d9962b", "#8a94a3"
 MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
@@ -54,9 +69,30 @@ def month_name(month: str) -> str:
     return f"{MONTHS[stamp.month - 1]} {stamp.year}"
 
 
+@st.cache_resource(show_spinner="Preparando los modelos (solo la primera vez, ~1 minuto)...")
+def embedded_client():
+    from fastapi.testclient import TestClient
+
+    from nowcast import params
+    from nowcast.api.fast import app, available_models
+    from nowcast.interface.main import train
+
+    if params.PRIMARY_MODEL not in available_models():
+        train()
+    if f"{params.PRIMARY_MODEL}{params.NEWS_MODEL_SUFFIX}" not in available_models():
+        train(use_news=True)
+    return TestClient(app)
+
+
+def call(method: str, path: str, **kwargs):
+    if EMBEDDED:
+        return embedded_client().request(method, path, **kwargs)
+    return requests.request(method, f"{API_URL}{path}", timeout=300, **kwargs)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def api_get(path: str, **query) -> dict:
-    response = requests.get(f"{API_URL}{path}", params=query, timeout=30)
+    response = call("GET", path, params=query)
     if response.status_code != 200:
         raise RuntimeError(response.json().get("detail", response.text))
     return response.json()
@@ -189,20 +225,48 @@ def comparison_section(model: str) -> None:
                "inflación de meses anteriores, y en esta prueba añadirlas no ayudó.")
 
 
-def headline_tester() -> None:
-    headline = st.text_input("Escribe un titular en inglés",
-                             placeholder="Gasoline prices soar as crude rallies")
-    if not headline.strip():
+VERDICT = {"up": "más inflación", "down": "menos inflación", "neu": "nada claro sobre precios"}
+
+
+def show_verdict(role: str, score: float, when: str | None = None) -> None:
+    source = f"Este titular ({when})" if when else "Este titular"
+    st.markdown(f"{source} sugiere **{VERDICT[role]}**, según InflaBERT "
+                f"(puntaje {num(score, sign=True)}, de -1 a +1).")
+
+
+def headline_search() -> None:
+    st.markdown("### Busca un titular")
+    query = st.text_input("Escribe una o varias palabras en inglés y elige un titular",
+                          placeholder="gasoline, oil, food prices, Fed...")
+    if len(query.strip()) < 2:
+        st.caption("Busca entre las 400.000 noticias sobre precios que leyó el modelo.")
         return
-    with st.spinner("Leyendo el titular..."):
-        response = requests.post(f"{API_URL}/classify", json={"headline": headline}, timeout=300)
-    if response.status_code != 200:
-        st.warning(response.json().get("detail", "No se pudo clasificar."))
-        return
-    infla = response.json()["inflabert"]
-    verdict = {"up": "más inflación", "down": "menos inflación", "neu": "nada claro sobre precios"}
-    st.markdown(f"Según el modelo, este titular sugiere **{verdict[infla['role']]}** "
-                f"(puntaje {num(infla['score'], sign=True)}, de -1 a +1).")
+
+    found = api_get("/headlines/search", q=query.strip(), k=8)
+    if not found["available"]:
+        st.caption("La búsqueda estará disponible cuando esté listo el índice de noticias.")
+    elif not found["results"]:
+        st.caption(f"Ningún titular contiene «{query}».")
+    else:
+        results = {f"{r['date']} · {r['title']}": r for r in found["results"]}
+        st.caption(f"{found['n_matches']:,} titulares contienen «{query}». "
+                   "Estos son los más recientes:".replace(",", "."))
+        choice = st.radio("Sugerencias", list(results), index=None, label_visibility="collapsed")
+        if choice:
+            item = results[choice]
+            show_verdict(item["role"], item["score"], month_name(item["date"][:7]))
+
+    if st.button(f"Analizar «{query.strip()}» como titular nuevo"):
+        with st.spinner("Leyendo el titular..."):
+            response = call("POST", "/classify", json={"headline": query.strip()})
+        if response.status_code == 200:
+            infla = response.json()["inflabert"]
+            show_verdict(infla["role"], infla["score"])
+        else:
+            st.caption("Analizar texto nuevo necesita los modelos de lenguaje, que no están "
+                       "instalados aquí. Puedes elegir un titular de las sugerencias.")
+    st.caption("InflaBERT acierta más o menos 6 de cada 10 veces, así que algunos "
+               "titulares salen mal clasificados.")
 
 
 st.markdown('<div class="eyebrow">NOWCAST DE INFLACIÓN · EE. UU.</div>', unsafe_allow_html=True)
@@ -263,8 +327,7 @@ try:
     news_section(month, result, drivers)
     comparison_section(model)
 
-    st.markdown("### Prueba con un titular")
-    headline_tester()
+    headline_search()
 except requests.ConnectionError:
     st.error(f"No hay conexión con la API ({API_URL}). Arráncala con `make run_api`.")
 except RuntimeError as exc:

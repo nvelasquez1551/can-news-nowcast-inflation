@@ -224,3 +224,6 @@ __marimo__/
 
 # Nowcast model registry (joblib + metadata)
 /models/
+
+# Model outputs written when the app trains on demo_data
+demo_data/processed/nowcast_*.csv

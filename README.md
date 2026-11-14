@@ -102,10 +102,20 @@ What the frontend shows:
 
 - **Nowcast del IPC:** pick a month. Line chart of official CPI vs. nowcast, and a bar chart that splits the change in the nowcast versus the previous month by driver (past inflation, oil, gasoline, expectations, seasonality, news...), plus a one-line summary of why it moved. Contributions add up exactly to the nowcast: coefficient × scaled value for the linear model, XGBoost's own SHAP values for XGBoost.
 - **Titulares del mes:** when `data/processed/news_scored.parquet` (Model 1 output) is present, the headlines of the month with the most inflationary and disinflationary InflaBERT scores.
-- **Clasificador de titulares:** InflaBERT and FinBERT on any headline.
+- **Busca un titular:** type a few words and pick one of the matching headlines from the Model 1 data to see its InflaBERT label. Any new text can also be classified when PyTorch is installed.
 
 - **¿Ayudan las noticias?:** error in 2020–2023 of the same model with and without news (saved models trained through 2019), with a Diebold-Mariano p-value.
 
 When the news models exist, the app uses `linear_news` by default and the bars include a **Noticias** driver; the other models can be picked under *Ajustes*.
 
-API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb|linear_news|xgb_news`, `/comparison?model=linear|xgb`, `/headlines?month=YYYY-MM`, `POST /classify`. The frontend reads the API address from `API_URL` (default `http://localhost:8000`), which is what changes when the API moves to the cloud.
+API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb|linear_news|xgb_news`, `/comparison?model=linear|xgb`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...`, `POST /classify`. The frontend reads the API address from `API_URL` (`make run_frontend` sets it to `http://localhost:8000`), which is what changes when the API moves to the cloud.
+
+### Without a separate API (Streamlit Cloud)
+
+When `API_URL` is not set, the frontend runs the API inside the Streamlit process with the data committed in `demo_data/` (FRED macro table, Model 1 monthly index, and a slim copy of the scored headlines) and trains the models on the first load, which takes about a minute. That is how the app runs on Streamlit Community Cloud:
+
+1. share.streamlit.io > **Create app** > deploy from GitHub.
+2. Repository `nvelasquez1551/can-news-nowcast-inflation`, branch `main`, main file `app/streamlit_app.py`.
+3. Deploy. Do not set `API_URL`.
+
+PyTorch is not installed there, so new text cannot be classified; headline search still works. Refresh `demo_data/` after a new Model 1 or FRED run.
