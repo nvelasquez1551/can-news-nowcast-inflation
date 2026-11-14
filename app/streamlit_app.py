@@ -40,6 +40,18 @@ FACTOR_NAMES = {
     "Precios al productor": "Precios de las fábricas",
 }
 NEWS_GROUP = "Noticias"
+KEYWORDS_ES = {
+    "oil": "petróleo", "prices": "precios", "fed": "Fed", "crude": "crudo",
+    "inflation": "inflación", "gasoline": "gasolina", "supply chain": "cadena de suministro",
+    "rate hike": "subida de tasas", "cpi": "IPC", "interest rate": "tasa de interés",
+    "tariffs": "aranceles", "gas prices": "precio del gas", "federal reserve": "Reserva Federal",
+    "deflation": "deflación", "wages": "salarios", "consumer prices": "precios al consumidor",
+    "food prices": "precio de los alimentos", "ppi": "precios al productor",
+    "energy prices": "precio de la energía", "gasoline prices": "precio de la gasolina",
+    "wage growth": "subida de salarios", "core cpi": "IPC subyacente",
+    "consumer price index": "índice de precios", "cost of living": "costo de vida",
+    "disinflation": "desinflación",
+}
 
 st.set_page_config(page_title="Inflación EE. UU.", layout="centered")
 st.markdown(f"""
@@ -122,16 +134,20 @@ def factors_chart(drivers: pd.DataFrame) -> alt.Chart:
     data["label"] = data["change"].map(lambda v: num(v, sign=True))
     data["sentido"] = data["change"].ge(0).map({True: "sube", False: "baja"})
     bars = alt.Chart(data).mark_bar(cornerRadius=3, height=22).encode(
-        x=alt.X("change:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False)),
+        x=alt.X("change:Q", title=None, scale=alt.Scale(padding=50),
+                axis=alt.Axis(labels=False, ticks=False, grid=False)),
         y=alt.Y("factor:N", sort=None, title=None,
                 axis=alt.Axis(labelLimit=260, labelFontSize=13, ticks=False, domain=False)),
         color=alt.Color("sentido:N", legend=None,
                         scale=alt.Scale(domain=["sube", "baja"], range=[AMBER, NAVY])),
         tooltip=[alt.Tooltip("factor:N", title="Factor"), alt.Tooltip("label:N", title="Puntos")],
     )
-    labels = bars.mark_text(align="left", dx=6, fontSize=12, color=NAVY).encode(
-        text="label:N", color=alt.value(NAVY))
-    return (bars + labels).properties(height=alt.Step(36)).configure_view(stroke=None)
+    # El número va fuera de la barra: a la derecha si suma, a la izquierda si resta
+    right = bars.mark_text(align="left", dx=6, fontSize=12).encode(
+        text="label:N", color=alt.value(NAVY)).transform_filter("datum.change >= 0")
+    left = bars.mark_text(align="right", dx=-6, fontSize=12).encode(
+        text="label:N", color=alt.value(NAVY)).transform_filter("datum.change < 0")
+    return (bars + right + left).properties(height=alt.Step(36)).configure_view(stroke=None)
 
 
 def history_chart(history: pd.DataFrame, month: str) -> alt.Chart:
@@ -195,7 +211,10 @@ def comparison_section(model: str) -> None:
         return
     without, with_news = result["without"]["mae"], result["with"]["mae"]
     period = f"{month_name(result['start'])} y {month_name(result['end'])}"
-    if with_news < without and result["p_value"] < 0.1:
+    if abs(with_news - without) < 0.01:
+        verdict = ("Con y sin noticias se equivoca prácticamente lo mismo: las noticias "
+                   "**no mejoran** la estimación.")
+    elif with_news < without and result["p_value"] < 0.1:
         verdict = "Con estos datos, las noticias **sí mejoran** la estimación."
     elif with_news < without:
         verdict = ("Con noticias se equivocó un poco menos, pero la diferencia es tan pequeña "
@@ -220,9 +239,11 @@ def comparison_section(model: str) -> None:
         text="label:N", color=alt.value(NAVY))
     st.altair_chart((bars + labels).properties(height=alt.Step(40)).configure_view(stroke=None),
                     width="stretch")
-    st.caption("Error medio por mes, en puntos de inflación mensual. Las noticias sí se mueven "
-               "con la inflación, pero el modelo ya cuenta con la gasolina, el petróleo y la "
-               "inflación de meses anteriores, y en esta prueba añadirlas no ayudó.")
+    first_year, last_year = result["train_start"][:4], result["train_end"][:4]
+    st.caption(f"Error medio por mes, en puntos de inflación mensual. Para que la comparación "
+               f"sea justa, los dos modelos aprendieron con los mismos años ({first_year}–"
+               f"{last_year}): antes de {first_year} no hay noticias. Los meses del COVID "
+               "(primavera de 2020) son los más difíciles para cualquier modelo.")
 
 
 VERDICT = {"up": "más inflación", "down": "menos inflación", "neu": "nada claro sobre precios"}
@@ -236,13 +257,22 @@ def show_verdict(role: str, score: float, when: str | None = None) -> None:
 
 def headline_search() -> None:
     st.markdown("### Busca un titular")
-    query = st.text_input("Escribe una o varias palabras en inglés y elige un titular",
-                          placeholder="gasoline, oil, food prices, Fed...")
-    if len(query.strip()) < 2:
-        st.caption("Busca entre las 400.000 noticias sobre precios que leyó el modelo.")
+    st.caption("Estas son las palabras clave con las que el modelo eligió las noticias sobre "
+               "precios, con cuántos titulares tiene cada una. Elige una o escribe otras "
+               "palabras en inglés.")
+    keywords = api_get("/headlines/keywords")
+    picked = None
+    if keywords["available"]:
+        counts = {k["keyword"]: k["n_headlines"] for k in keywords["keywords"]}
+        picked = st.pills(
+            "Palabras clave", list(counts), label_visibility="collapsed",
+            format_func=lambda kw: f"{KEYWORDS_ES.get(kw, kw)} · {counts[kw]:,}".replace(",", "."))
+    typed = st.text_input("…o escribe otras palabras", placeholder="gasoline, food prices, Fed...")
+    query = typed.strip() or picked or ""
+    if len(query) < 2:
         return
 
-    found = api_get("/headlines/search", q=query.strip(), k=8)
+    found = api_get("/headlines/search", q=query, k=8, keyword=not typed.strip())
     if not found["available"]:
         st.caption("La búsqueda estará disponible cuando esté listo el índice de noticias.")
     elif not found["results"]:
@@ -256,9 +286,9 @@ def headline_search() -> None:
             item = results[choice]
             show_verdict(item["role"], item["score"], month_name(item["date"][:7]))
 
-    if st.button(f"Analizar «{query.strip()}» como titular nuevo"):
+    if typed.strip() and st.button(f"Analizar «{query}» como titular nuevo"):
         with st.spinner("Leyendo el titular..."):
-            response = call("POST", "/classify", json={"headline": query.strip()})
+            response = call("POST", "/classify", json={"headline": query})
         if response.status_code == 200:
             infla = response.json()["inflabert"]
             show_verdict(infla["role"], infla["score"])

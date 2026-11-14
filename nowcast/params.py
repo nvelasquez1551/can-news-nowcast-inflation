@@ -198,4 +198,6 @@ DRIVER_GROUPS = {
 }
 # Salida del Modelo 1 por artículo, para mostrar los titulares de cada mes
 NEWS_SCORED_PATH = PROCESSED_DATA_DIR / "news_scored.parquet"
+# Palabras clave con las que el Modelo 1 eligió las noticias (keywords_broad)
+MODEL1_CONFIG_PATH = ROOT / "config" / "model1.yaml"
 N_TOP_HEADLINES = 5

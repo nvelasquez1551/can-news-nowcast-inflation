@@ -2,6 +2,8 @@
 
 Nowcasting US monthly inflation with financial news: an NLP classifier builds a news index that feeds an ML model, compared with and without news.
 
+Guía en español (qué hace cada parte y qué se ha hecho): [docs/GUIA_DEL_PROYECTO.md](docs/GUIA_DEL_PROYECTO.md).
+
 Specs: [Model 1](docs/specs/model-1-news-sentiment.md) (news indexes, implemented below) · [Model 2](docs/specs/model-2-cpi-nowcast.md) (CPI nowcast, in progress).
 
 Model 2 code: the [`nowcast`](nowcast/README.md) package (`pip install -e ".[dev]"`).
