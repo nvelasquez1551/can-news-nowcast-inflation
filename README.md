@@ -89,6 +89,7 @@ app/streamlit_app.py  ──HTTP──>  nowcast/api/fast.py  ──>  models/ (
 2. Copy `.env.example` to `.env` and set `FRED_API_KEY` (free at fred.stlouisfed.org > My Account > API Keys).
 3. `make data` — downloads FRED into `data/raw/macro_monthly_raw.csv`.
 4. `make train` — trains the linear model and XGBoost and saves them in `models/`.
+5. `make train_news` — same models with the Model 1 news index (`linear_news`, `xgb_news`). Needs `data/processed/news_index_monthly.csv`; copy `news_scored.parquet` there too for the headlines.
 
 **Every time**, in two terminals:
 
@@ -103,6 +104,8 @@ What the frontend shows:
 - **Titulares del mes:** when `data/processed/news_scored.parquet` (Model 1 output) is present, the headlines of the month with the most inflationary and disinflationary InflaBERT scores.
 - **Clasificador de titulares:** InflaBERT and FinBERT on any headline.
 
-The news driver appears once a model is trained with `USE_NEWS = True` in `nowcast/params.py` and `data/processed/news_index_monthly.csv` exists.
+- **¿Ayudan las noticias?:** error in 2020–2023 of the same model with and without news (saved models trained through 2019), with a Diebold-Mariano p-value.
 
-API endpoints: `GET /`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb`, `/headlines?month=YYYY-MM`, `POST /classify`. The frontend reads the API address from `API_URL` (default `http://localhost:8000`), which is what changes when the API moves to the cloud.
+When the news models exist, the app uses `linear_news` by default and the bars include a **Noticias** driver; the other models can be picked under *Ajustes*.
+
+API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb|linear_news|xgb_news`, `/comparison?model=linear|xgb`, `/headlines?month=YYYY-MM`, `POST /classify`. The frontend reads the API address from `API_URL` (default `http://localhost:8000`), which is what changes when the API moves to the cloud.

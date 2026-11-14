@@ -24,7 +24,7 @@ FACTOR_NAMES = {
     "Expectativas de inflación": "Lo que espera la gente",
     "Precios al productor": "Precios de las fábricas",
 }
-MODELS = {"linear": "Regresión lineal", "xgb": "XGBoost"}
+NEWS_GROUP = "Noticias"
 
 st.set_page_config(page_title="Inflación EE. UU.", layout="centered")
 st.markdown(f"""
@@ -79,7 +79,10 @@ def explain(result: dict, drivers: pd.DataFrame) -> str:
 
 
 def factors_chart(drivers: pd.DataFrame) -> alt.Chart:
-    data = drivers[drivers["change"].abs() >= 0.005].head(5).copy()
+    data = drivers[drivers["change"].abs() >= 0.005].head(5)
+    if NEWS_GROUP in drivers["group"].values and NEWS_GROUP not in data["group"].values:
+        data = pd.concat([data, drivers[drivers["group"] == NEWS_GROUP]])
+    data = data.copy()
     data["label"] = data["change"].map(lambda v: num(v, sign=True))
     data["sentido"] = data["change"].ge(0).map({True: "sube", False: "baja"})
     bars = alt.Chart(data).mark_bar(cornerRadius=3, height=22).encode(
@@ -114,13 +117,29 @@ def history_chart(history: pd.DataFrame, month: str) -> alt.Chart:
     return (lines + marker).properties(height=280).configure_view(stroke=None)
 
 
-def headlines(month: str) -> None:
+def news_section(month: str, result: dict, drivers: pd.DataFrame) -> None:
+    st.markdown("### Las noticias del mes")
     news = api_get("/headlines", month=month)
-    st.markdown("### Noticias del mes")
     if not news["available"]:
         st.caption("Aparecerán aquí cuando esté listo el índice de noticias (Modelo 1).")
         return
-    st.caption(f"{news['n_articles']} noticias sobre precios en {month_name(month)}.")
+    st.write(f"En {month_name(month)} hubo {news['n_articles']:,} noticias sobre precios. "
+             f"El {news['share_up']:.0%} apuntaba a más inflación y el "
+             f"{news['share_down']:.0%} a menos.".replace(",", "."))
+
+    if result["news"] is None:
+        st.caption("El modelo elegido no usa noticias. Elige uno «con noticias» en Ajustes "
+                   "para ver cuánto movieron la estimación.")
+    else:
+        score = result["news"]["infla_score_mean"]
+        previous = month_name(result["previous_month"]).split()[0]
+        tone = "más" if score["value"] > score["previous"] else "menos"
+        effect = drivers.loc[drivers["group"] == NEWS_GROUP, "change"].iloc[0]
+        st.write(f"Frente a {previous}, las noticias fueron {tone} inflacionarias "
+                 f"(puntaje medio {num(score['previous'], sign=True)} → "
+                 f"{num(score['value'], sign=True)}, de -1 a +1). "
+                 f"Eso movió la estimación {num(effect, sign=True)} puntos.")
+
     left, right = st.columns(2)
     for column, key, title in ((left, "up", "Apuntan a más inflación"),
                                (right, "down", "Apuntan a menos inflación")):
@@ -128,6 +147,46 @@ def headlines(month: str) -> None:
             st.markdown(f"**{title}**")
             for item in news[key]:
                 st.markdown(f"- {item['title']}")
+
+
+def comparison_section(model: str) -> None:
+    st.markdown("### ¿Ayudan las noticias a estimar mejor?")
+    try:
+        result = api_get("/comparison", model=model)
+    except RuntimeError:
+        st.caption("Para comparar hace falta entrenar el modelo con y sin noticias "
+                   "(`make train` y `make train_news`).")
+        return
+    without, with_news = result["without"]["mae"], result["with"]["mae"]
+    period = f"{month_name(result['start'])} y {month_name(result['end'])}"
+    if with_news < without and result["p_value"] < 0.1:
+        verdict = "Con estos datos, las noticias **sí mejoran** la estimación."
+    elif with_news < without:
+        verdict = ("Con noticias se equivocó un poco menos, pero la diferencia es tan pequeña "
+                   "que podría ser casualidad.")
+    else:
+        verdict = "Con estos datos, las noticias **no mejoran** la estimación."
+    st.write(f"Entre {period}, meses que el modelo no vio al entrenarse, la estimación se "
+             f"equivocó en promedio **{num(without)} puntos** sin noticias y "
+             f"**{num(with_news)} puntos** con noticias. {verdict}")
+    data = pd.DataFrame({"modelo": ["Sin noticias", "Con noticias"],
+                         "error": [without, with_news]})
+    data["label"] = data["error"].map(num)
+    bars = alt.Chart(data).mark_bar(cornerRadius=3, height=26).encode(
+        x=alt.X("error:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False)),
+        y=alt.Y("modelo:N", sort=None, title=None,
+                axis=alt.Axis(labelFontSize=13, ticks=False, domain=False)),
+        color=alt.Color("modelo:N", legend=None,
+                        scale=alt.Scale(domain=["Sin noticias", "Con noticias"],
+                                        range=[NAVY, AMBER])),
+    )
+    labels = bars.mark_text(align="left", dx=6, fontSize=12).encode(
+        text="label:N", color=alt.value(NAVY))
+    st.altair_chart((bars + labels).properties(height=alt.Step(40)).configure_view(stroke=None),
+                    width="stretch")
+    st.caption("Error medio por mes, en puntos de inflación mensual. Las noticias sí se mueven "
+               "con la inflación, pero el modelo ya cuenta con la gasolina, el petróleo y la "
+               "inflación de meses anteriores, y en esta prueba añadirlas no ayudó.")
 
 
 def headline_tester() -> None:
@@ -153,8 +212,15 @@ st.markdown('<p class="lead">El dato oficial de inflación sale unas dos semanas
             'la inflación de meses anteriores y las noticias.</p>', unsafe_allow_html=True)
 
 try:
+    catalog = api_get("/models")
+    options = {m["name"]: f"{m['label']} · {'con' if m['uses_news'] else 'sin'} noticias"
+               for m in catalog["models"]}
+    if not options:
+        st.error("No hay modelos entrenados. Ejecuta `make train` (y `make train_news`).")
+        st.stop()
     with st.expander("Ajustes"):
-        model = st.radio("Modelo", list(MODELS), format_func=MODELS.get, horizontal=True)
+        model = st.radio("Modelo", list(options), format_func=options.get,
+                         index=list(options).index(catalog["default"]))
     months = api_get("/months", model=model)["months"]
     month = st.selectbox("Mes", months[::-1], format_func=month_name)
 
@@ -194,7 +260,8 @@ try:
     else:
         st.caption("Desde 2020 el modelo no había visto estos datos: es una prueba real.")
 
-    headlines(month)
+    news_section(month, result, drivers)
+    comparison_section(model)
 
     st.markdown("### Prueba con un titular")
     headline_tester()

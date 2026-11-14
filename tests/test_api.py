@@ -1,5 +1,6 @@
 """Tests de la API con datos y modelo sintéticos (no lee data/ ni models/)."""
 
+import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -10,25 +11,47 @@ from nowcast.ml_logic.data import split_by_date
 from nowcast.ml_logic.model import build_model
 
 
+def news_table(table: pd.DataFrame) -> pd.DataFrame:
+    rng = np.random.default_rng(1)
+    news = pd.DataFrame(rng.uniform(-1, 1, (len(table), len(params.NEWS_COLS))),
+                        index=table.index, columns=params.NEWS_COLS)
+    return table.join(news)
+
+
 @pytest.fixture
 def client(table, monkeypatch, tmp_path):
-    train, _ = split_by_date(table)
-    pipe = build_model("linear").fit(train[params.FEATURES], train[params.TARGET])
-    metadata = {"model_name": "linear", "trained_at": "2026-01-01T00:00:00",
-                "train_start": "1999-02", "train_end": "2019-12",
-                "features": params.FEATURES}
+    tables = {"macro": table, "news": news_table(table)}
+    fitted = {}
+    for name, cols, key in (("linear", params.FEATURES, "macro"),
+                            ("linear_news", params.FEATURES + params.NEWS_COLS, "news")):
+        train, _ = split_by_date(tables[key])
+        pipe = build_model("linear", cols).fit(train[cols], train[params.TARGET])
+        fitted[name] = (pipe, {"model_name": name, "trained_at": "2026-01-01T00:00:00",
+                               "train_start": "1999-02", "train_end": "2019-12",
+                               "features": cols})
 
     def get_model(model_name):
-        if model_name not in params.MODEL_NAMES:
+        if model_name not in fitted:
             raise fast.HTTPException(404, "unknown model")
-        return pipe, metadata
+        return fitted[model_name]
 
+    def get_table(features):
+        return tables["news" if params.NEWS_COLS[0] in features else "macro"]
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "linear_20260101-000000-000000.joblib").touch()
+    monkeypatch.setattr(params, "MODELS_DIR", models_dir)
     monkeypatch.setattr(fast, "get_model", get_model)
-    monkeypatch.setattr(fast, "get_table", lambda features: table)
+    monkeypatch.setattr(fast, "get_table", get_table)
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
     fast.load_scored_news.cache_clear()
     yield TestClient(fast.app)
     fast.load_scored_news.cache_clear()
+
+
+def add_news_model():
+    (params.MODELS_DIR / "linear_news_20260101-000000-000000.joblib").touch()
 
 
 def test_root_and_months(client):
@@ -71,6 +94,7 @@ def test_headlines_without_and_with_scored_news(client):
         "Date": pd.to_datetime(["2021-06-02", "2021-06-10", "2021-06-20", "2021-07-01"], utc=True),
         "Article_title": ["prices soar", "prices ease", "prices flat", "july news"],
         "infla_score": [0.9, -0.7, 0.0, 0.5],
+        "infla_role": ["up", "down", "neu", "up"],
     }).to_parquet(params.NEWS_SCORED_PATH)
     fast.load_scored_news.cache_clear()
 
@@ -78,7 +102,38 @@ def test_headlines_without_and_with_scored_news(client):
     assert body["available"] is True and body["n_articles"] == 3
     assert [h["title"] for h in body["up"]] == ["prices soar"]
     assert [h["title"] for h in body["down"]] == ["prices ease"]
+    assert body["share_up"] == pytest.approx(1 / 3) and body["share_down"] == pytest.approx(1 / 3)
 
 
 def test_classify_rejects_empty_headline(client):
     assert client.post("/classify", json={"headline": "  "}).status_code == 422
+
+
+def test_models_lists_trained_files_and_prefers_news(client):
+    body = client.get("/models").json()
+    assert [m["name"] for m in body["models"]] == ["linear"] and body["default"] == "linear"
+    assert client.get("/nowcast").json()["news"] is None
+
+    add_news_model()
+    body = client.get("/models").json()
+    assert body["default"] == "linear_news"
+    assert {m["name"]: m["uses_news"] for m in body["models"]} == {
+        "linear": False, "linear_news": True}
+
+
+def test_news_model_explains_news_contribution(client):
+    add_news_model()
+    body = client.get("/nowcast", params={"month": "2021-06"}).json()
+    assert body["model"] == "linear_news" and body["uses_news"] is True
+    assert "Noticias" in [d["group"] for d in body["drivers"]]
+    assert set(body["news"]) == set(params.NEWS_COLS)
+
+
+def test_comparison_needs_both_models_and_uses_test_months(client):
+    assert client.get("/comparison").status_code == 404
+    add_news_model()
+    body = client.get("/comparison", params={"model": "linear"}).json()
+    assert body["n_months"] == params.N_TEST_MONTHS
+    assert (body["start"], body["end"]) == ("2020-01", "2023-12")
+    assert body["with"]["rmse"] > 0 and body["without"]["rmse"] > 0
+    assert 0 <= body["p_value"] <= 1
