@@ -47,9 +47,9 @@ Two pretrained classifiers are run **off the shelf** (no fine-tuning, no manual 
 
 ## 4. Nowcast timing (cutoff rule)
 
-- **Cutoff: day 15 of month t.** The nowcast for month *t* is made on the 15th of month *t* using news published from day 1 through day 15 of month *t* (UTC, inclusive). This follows InflaBERT's setup, so results are comparable.
-- Keep the cutoff day as a config parameter (`cutoff_day: 15`) so the team can test end-of-month as a robustness check.
-- **Note for Model 2:** every other predictor must also be known by the 15th of month *t* (e.g., oil and gasoline averaged over days 1 to 15; CPI for month *t-1* is usually published around mid-month *t*, so check release dates and use *t-2* if it is not yet out).
+- **Cutoff: end of month t (team decision).** The nowcast for month *t* is made on the last day of month *t* using all news published in month *t* (UTC). Config: `cutoff_day: 31`, which keeps every day of the month.
+- `cutoff_day: 15` reproduces InflaBERT's mid-month setup and is kept as a robustness check.
+- **Note for Model 2:** every other predictor must also be known at the end of month *t* (e.g., oil and gasoline averaged over month *t*; CPI for month *t-1*, published mid-month *t*). See the Model 2 spec.
 
 ## 5. Pipeline
 
@@ -163,7 +163,7 @@ The full scoring run happens in Colab (GPU), not on the coding agent's machine. 
 - Which FNSPID file (or both) gives the best 1999 to 2023 coverage?
 - Headline only, or summary when available?
 - Final keyword list (broad vs. InflaBERT's narrow lexicon).
-- Keep day-15 cutoff as primary, end-of-month as robustness?
+- ~~Keep day-15 cutoff as primary, end-of-month as robustness?~~ Decided: end of month is primary, day 15 is the robustness check.
 - How to treat isolated months below 30 articles after the start month *S*.
 
 ## Reference

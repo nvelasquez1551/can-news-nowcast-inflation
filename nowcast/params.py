@@ -19,9 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 FRED_API_KEY = os.environ.get("FRED_API_KEY")  # nunca se versiona (.env)
 
-RAW_DATA_DIR = ROOT / "data" / "raw"
-PROCESSED_DATA_DIR = ROOT / "data" / "processed"
-MODELS_DIR = ROOT / "models"  # registry (joblib + metadata json), ignorado por git
+# NOWCAST_DATA_DIR / NOWCAST_MODELS_DIR cambian las carpetas (p. ej. en Streamlit Cloud)
+DATA_DIR = Path(os.environ.get("NOWCAST_DATA_DIR", ROOT / "data"))
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+MODELS_DIR = Path(os.environ.get("NOWCAST_MODELS_DIR", ROOT / "models"))  # registry, ignorado por git
 # Archivos del registry: models/<modelo>_<timestamp>.joblib (+ .json)
 # Ancho fijo y de mayor a menor unidad: el orden alfabético = orden temporal.
 # Microsegundos (%f) para que dos guardados seguidos no choquen.
@@ -29,6 +31,16 @@ REGISTRY_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S-%f"
 
 RAW_MACRO_PATH = RAW_DATA_DIR / "macro_monthly_raw.csv"
 NEWS_INDEX_PATH = PROCESSED_DATA_DIR / "news_index_monthly.csv"  # salida del Modelo 1
+
+# Salidas del paquete (nombres nuevos: nunca pisan los archivos v1)
+CV_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results.csv"
+CV_RESULTS_NEWS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results_news.csv"
+FIXED_PREDICTIONS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_predictions.csv"
+FIXED_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_results.csv"
+FIXED_DM_PATH = PROCESSED_DATA_DIR / "nowcast_fixed_dm_tests.csv"
+EXPANDING_PREDICTIONS_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_predictions.csv"
+EXPANDING_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_results.csv"
+EXPANDING_DM_PATH = PROCESSED_DATA_DIR / "nowcast_expanding_dm_tests.csv"
 
 # Salidas de los notebooks v1, usadas solo para verificar el refactor
 NB02_MODEL_TABLE_PATH = PROCESSED_DATA_DIR / "model_table_macro.csv"
@@ -107,6 +119,8 @@ LEAKAGE_TEST_DATES = ["2005-06-01", "2008-10-01", "2015-01-01",
 USE_NEWS = False
 NEWS_DATE_COL = "month"
 NEWS_COLS = ["infla_score_mean", "infla_net_share"]
+# Los modelos entrenados con noticias se guardan como <modelo>_news (p. ej. linear_news)
+NEWS_MODEL_SUFFIX = "_news"
 
 # ---------------------------------------------------------------------------
 # Split temporal (notebook 02)
@@ -164,3 +178,24 @@ DM_PAIRS = [
 # Re-búsqueda de hiperparámetros de XGBoost cada RETUNE_EVERY meses de test
 # (2020-01, 2021-01, 2022-01, 2023-01). None = parámetros fijos (reproduce 03b).
 RETUNE_EVERY = 12
+
+# ---------------------------------------------------------------------------
+# Explicación del nowcast (API y frontend)
+# ---------------------------------------------------------------------------
+# Cada feature se agrupa en un "motivo" legible. La contribución de un grupo es
+# la suma de las contribuciones de sus features.
+DRIVER_GROUPS = {
+    "Inflación pasada": ["y_lag1", "y_lag2", "y_lag3", "y_ma12"],
+    "Inflación subyacente": ["cpi_core_chg", "cpi_core_chg_ma12"],
+    "Precios al productor": ["ppi_chg"],
+    "Petróleo": ["oil_mean_chg", "oil_last_chg"],
+    "Gasolina": ["gas_mean_chg", "gas_last_chg"],
+    "Expectativas de inflación": ["exp"],
+    "Vivienda": ["housing_chg"],
+    "Empleo": ["payems_chg"],
+    "Estacionalidad": [MONTH_COL],
+    "Noticias": NEWS_COLS,
+}
+# Salida del Modelo 1 por artículo, para mostrar los titulares de cada mes
+NEWS_SCORED_PATH = PROCESSED_DATA_DIR / "news_scored.parquet"
+N_TOP_HEADLINES = 5

@@ -43,7 +43,7 @@ def fetch_cpi_mom(cfg: Model1Config) -> tuple[pd.DataFrame | None, str | None]:
 
 
 def _label_distribution(scored: pd.DataFrame, label_col: str) -> pd.DataFrame:
-    work = scored.copy()
+    work = scored.loc[:, ["Date", label_col]].copy()
     work["Date"] = pd.to_datetime(work["Date"], utc=True, errors="coerce")
     work["year"] = work["Date"].dt.year
     counts = (

@@ -48,7 +48,7 @@ def aggregate_monthly(scored: pd.DataFrame, cutoff_day: int) -> pd.DataFrame:
         empty = pd.DataFrame(columns=INDEX_COLUMNS + ["below_min_flag"])
         return empty
 
-    work = scored.copy()
+    work = scored.loc[:, ["Date", "finbert_score", "infla_score", "finbert_role", "infla_role"]].copy()
     work["Date"] = pd.to_datetime(work["Date"], utc=True, errors="coerce")
     work = work.loc[work["Date"].notna()].copy()
     if work.empty:

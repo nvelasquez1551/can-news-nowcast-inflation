@@ -41,6 +41,8 @@ class Model1Config:
     sample_rows: int | None
     use_narrow_lexicon: bool
     prefer_lsa_summary: bool
+    use_fp16: bool
+    exclude_title_patterns: list[str]
     sanity_sample_size: int
     sanity_sample_seed: int
     keywords: list[str]
@@ -173,6 +175,9 @@ def load_config(
     keywords_broad = [str(item) for item in raw["keywords_broad"]]
     keywords_narrow = [str(item) for item in raw["keywords_narrow"]]
     use_narrow = bool(raw.get("use_narrow_lexicon", False))
+    cutoff_day = int(raw["cutoff_day"])
+    if not 1 <= cutoff_day <= 31:
+        raise ValueError(f"cutoff_day must be 1 to 31 (31 = whole month), got {cutoff_day}.")
 
     return Model1Config(
         raw=raw,
@@ -183,7 +188,7 @@ def load_config(
         columns_keep=[str(item) for item in raw["dataset"]["columns_keep"]],
         finbert=_model_spec("finbert", raw["models"]["finbert"]),
         inflabert=_model_spec("inflabert", raw["models"]["inflabert"]),
-        cutoff_day=int(raw["cutoff_day"]),
+        cutoff_day=cutoff_day,
         min_articles_per_month=int(raw["min_articles_per_month"]),
         consecutive_months=int(raw["consecutive_months"]),
         batch_size=int(raw["batch_size"]),
@@ -192,6 +197,8 @@ def load_config(
         sample_rows=sample,
         use_narrow_lexicon=use_narrow,
         prefer_lsa_summary=bool(raw.get("prefer_lsa_summary", False)),
+        use_fp16=bool(raw.get("use_fp16", True)),
+        exclude_title_patterns=[str(item) for item in raw.get("exclude_title_patterns") or []],
         sanity_sample_size=int(raw.get("sanity_sample_size", 50)),
         sanity_sample_seed=int(raw.get("sanity_sample_seed", 42)),
         keywords=keywords_narrow if use_narrow else keywords_broad,
