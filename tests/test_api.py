@@ -137,3 +137,21 @@ def test_comparison_needs_both_models_and_uses_test_months(client):
     assert (body["start"], body["end"]) == ("2020-01", "2023-12")
     assert body["with"]["rmse"] > 0 and body["without"]["rmse"] > 0
     assert 0 <= body["p_value"] <= 1
+
+
+def test_search_headlines_matches_every_word(client):
+    assert client.get("/headlines/search", params={"q": "oil"}).json()["available"] is False
+
+    pd.DataFrame({
+        "Date": pd.to_datetime(["2021-06-02", "2021-06-10", "2021-07-01", "2021-07-02"], utc=True),
+        "Article_title": ["Oil prices soar", "Oil output steady", "Food prices ease", "Oil prices soar"],
+        "infla_score": [0.9, 0.1, -0.7, 0.8],
+        "infla_role": ["up", "neu", "down", "up"],
+    }).to_parquet(params.NEWS_SCORED_PATH)
+    fast.load_scored_news.cache_clear()
+
+    body = client.get("/headlines/search", params={"q": "OIL prices"}).json()
+    assert body["n_matches"] == 2
+    assert [r["title"] for r in body["results"]] == ["Oil prices soar"]  # sin repetidos
+    assert body["results"][0]["date"] == "2021-07-02"  # el más reciente
+    assert client.get("/headlines/search", params={"q": "x"}).status_code == 422

@@ -9,6 +9,7 @@ Endpoints:
     GET  /history             dato oficial vs nowcast, todos los meses
     GET  /nowcast?month=      nowcast de un mes y por qué cambió frente al anterior
     GET  /headlines?month=    titulares del mes que más empujan al alza / baja (Modelo 1)
+    GET  /headlines/search?q= titulares de la base que contienen esas palabras, con su puntaje
     GET  /comparison          error en 2020-2023 del mismo modelo con y sin noticias
     POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1)
 
@@ -225,7 +226,13 @@ def load_scored_news() -> pd.DataFrame | None:
                            columns=["Date", "Article_title", "infla_score", "infla_role"])
     news["month"] = (pd.to_datetime(news["Date"], utc=True)
                      .dt.tz_convert(None).dt.to_period("M").dt.to_timestamp())
+    news["title_lower"] = news["Article_title"].astype(str).str.lower()
     return news
+
+
+def headline_record(row) -> dict:
+    return {"date": f"{pd.Timestamp(row.Date):%Y-%m-%d}", "title": row.Article_title,
+            "score": float(row.infla_score), "role": str(row.infla_role)}
 
 
 @app.get("/headlines")
@@ -241,14 +248,29 @@ def headlines(month: str = Query(..., description="YYYY-MM"),
     unique = rows.drop_duplicates("Article_title", keep="last")
 
     def records(frame: pd.DataFrame) -> list[dict]:
-        return [{"date": f"{pd.Timestamp(r.Date):%Y-%m-%d}", "title": r.Article_title,
-                 "score": float(r.infla_score)} for r in frame.itertuples()]
+        return [headline_record(row) for row in frame.itertuples()]
 
     roles = rows["infla_role"].astype(str)
     return {"month": f"{target:%Y-%m}", "available": True, "n_articles": len(rows),
             "share_up": float((roles == "up").mean()), "share_down": float((roles == "down").mean()),
             "up": records(unique.tail(k).iloc[::-1]),
             "down": records(unique.drop_duplicates("Article_title").head(k))}
+
+
+@app.get("/headlines/search")
+def search_headlines(q: str = Query(..., min_length=2, description="una o varias palabras"),
+                     k: int = Query(8, ge=1, le=30)):
+    """Titulares que contienen todas las palabras de `q`, los más recientes primero."""
+    news = load_scored_news()
+    if news is None:
+        return {"available": False, "n_matches": 0, "results": []}
+    mask = pd.Series(True, index=news.index)
+    for word in q.lower().split():
+        mask &= news["title_lower"].str.contains(word, regex=False)
+    hits = (news.loc[mask].sort_values("Date", ascending=False)
+            .drop_duplicates("Article_title").head(k))
+    return {"available": True, "n_matches": int(mask.sum()),
+            "results": [headline_record(row) for row in hits.itertuples()]}
 
 
 class Headline(BaseModel):
