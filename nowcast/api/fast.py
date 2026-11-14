@@ -10,6 +10,7 @@ Endpoints:
     GET  /nowcast?month=      nowcast de un mes y por qué cambió frente al anterior
     GET  /headlines?month=    titulares del mes que más empujan al alza / baja (Modelo 1)
     GET  /headlines/search?q= titulares de la base que contienen esas palabras, con su puntaje
+    GET  /headlines/keywords  palabras clave del Modelo 1 y cuántos titulares tiene cada una
     GET  /comparison          error en 2020-2023 del mismo modelo con y sin noticias
     POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1)
 
@@ -17,9 +18,13 @@ Endpoints:
 principal con noticias si está entrenado, y si no, el modelo principal macro.
 """
 
+import re
 from functools import lru_cache
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import yaml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
@@ -27,7 +32,7 @@ from nowcast import params
 from nowcast.ml_logic.data import load_news_index, load_raw_data
 from nowcast.ml_logic.explain import describe_change, explain_change
 from nowcast.ml_logic.features import build_model_table
-from nowcast.ml_logic.model import diebold_mariano
+from nowcast.ml_logic.model import build_model, diebold_mariano
 from nowcast.ml_logic.registry import load_model
 
 app = FastAPI(title="Nowcast de inflación EE. UU.", version="0.1.0")
@@ -185,32 +190,50 @@ def nowcast(month: str | None = Query(None, description="YYYY-MM; vacío = últi
     }
 
 
+@lru_cache
+def same_sample_baseline(base: str, news_features: tuple[str, ...]):
+    """Modelo `base` sin noticias, entrenado con los meses de train de la tabla con noticias."""
+    _, base_metadata = get_model(base)
+    table = get_table(news_features)
+    train_rows = table.loc[:params.TRAIN_END]
+    cols = base_metadata["features"]
+    pipe = build_model(base, cols, base_metadata.get("hyperparameters") or None)
+    return pipe.fit(train_rows[cols], train_rows[params.TARGET])
+
+
 @app.get("/comparison")
 def comparison(model: str = Query(params.PRIMARY_MODEL, description="linear o xgb")):
-    """Mismo tipo de modelo con y sin noticias, en los meses de test que ambos cubren.
+    """Mismo tipo de modelo con y sin noticias, aprendiendo con los MISMOS meses.
 
-    Son los modelos guardados (entrenados hasta 2019), no el expanding refit.
+    El modelo con noticias solo puede entrenar desde que hay noticias (2007). Para que
+    la única diferencia sean las noticias, el modelo sin noticias se re-ajusta aquí con
+    esos mismos meses de train y los hiperparámetros del modelo macro guardado.
+    Evaluación fija en 2020-2023, no el expanding refit.
     """
     base = model.removesuffix(params.NEWS_MODEL_SUFFIX)
     names = {"without": base, "with": f"{base}{params.NEWS_MODEL_SUFFIX}"}
     if not set(names.values()) <= set(available_models()):
         raise HTTPException(404, f"train both {names['without']} and {names['with']} first")
 
-    predictions = {}
-    for key, name in names.items():
-        pipe, metadata, table, X = model_and_data(name)
-        test = table.loc[params.TEST_START:params.TEST_END]
-        predictions["y"] = test[params.TARGET]
-        predictions[key] = pd.Series(pipe.predict(X.loc[test.index]), index=test.index)
-    frame = pd.DataFrame(predictions).dropna()
+    pipe, metadata, table, X = model_and_data(names["with"])
+    without = same_sample_baseline(base, tuple(metadata["features"]))
+    macro_cols = [col for col in metadata["features"] if col not in params.NEWS_COLS]
+    test = table.loc[params.TEST_START:params.TEST_END]
+    frame = pd.DataFrame({
+        "y": test[params.TARGET],
+        "without": without.predict(test[macro_cols]),
+        "with": pipe.predict(X.loc[test.index]),
+    }, index=test.index).dropna()
 
     def errors(column: str) -> dict:
         error = frame["y"] - frame[column]
         return {"rmse": float((error ** 2).mean() ** 0.5), "mae": float(error.abs().mean())}
 
     dm = diebold_mariano(frame, [("with", "without")]).iloc[0]
+    train_rows = table.loc[:params.TRAIN_END]
     return {
         "model": base,
+        "train_start": f"{train_rows.index[0]:%Y-%m}", "train_end": f"{train_rows.index[-1]:%Y-%m}",
         "start": f"{frame.index[0]:%Y-%m}", "end": f"{frame.index[-1]:%Y-%m}",
         "n_months": len(frame),
         "without": errors("without"), "with": errors("with"),
@@ -259,18 +282,50 @@ def headlines(month: str = Query(..., description="YYYY-MM"),
 
 @app.get("/headlines/search")
 def search_headlines(q: str = Query(..., min_length=2, description="una o varias palabras"),
-                     k: int = Query(8, ge=1, le=30)):
-    """Titulares que contienen todas las palabras de `q`, los más recientes primero."""
+                     k: int = Query(8, ge=1, le=30),
+                     keyword: bool = Query(False, description="q es una palabra clave exacta")):
+    """Titulares que contienen todas las palabras de `q`, los más recientes primero.
+
+    Con keyword=true, `q` se busca como frase completa ("oil" no encuentra "toilet").
+    """
     news = load_scored_news()
     if news is None:
         return {"available": False, "n_matches": 0, "results": []}
     mask = pd.Series(True, index=news.index)
-    for word in q.lower().split():
-        mask &= news["title_lower"].str.contains(word, regex=False)
+    if keyword:
+        mask &= contains_keyword(news["title_lower"], q)
+    else:
+        for word in q.lower().split():
+            mask &= news["title_lower"].str.contains(word, regex=False)
     hits = (news.loc[mask].sort_values("Date", ascending=False)
             .drop_duplicates("Article_title").head(k))
-    return {"available": True, "n_matches": int(mask.sum()),
+    return {"available": True, "n_matches": int(news.loc[mask, "title_lower"].nunique()),
             "results": [headline_record(row) for row in hits.itertuples()]}
+
+
+def contains_keyword(titles: pd.Series, keyword: str) -> pd.Series:
+    """Palabra o frase completa ("oil" no encuentra "toilet"). pyarrow: ~10x más rápido que pandas."""
+    pattern = rf"\b{re.escape(keyword.strip().lower())}\b"
+    hits = pc.match_substring_regex(pa.array(titles.to_numpy(dtype=object)), pattern)
+    return pd.Series(hits.to_numpy(zero_copy_only=False), index=titles.index)
+
+
+@lru_cache
+def keyword_counts() -> list[dict]:
+    news = load_scored_news()
+    config = yaml.safe_load(params.MODEL1_CONFIG_PATH.read_text(encoding="utf-8"))
+    titles = news["title_lower"].drop_duplicates()
+    counts = [{"keyword": kw, "n_headlines": int(contains_keyword(titles, kw).sum())}
+              for kw in config["keywords_broad"]]
+    return sorted([c for c in counts if c["n_headlines"]], key=lambda c: -c["n_headlines"])
+
+
+@app.get("/headlines/keywords")
+def headline_keywords():
+    """Palabras clave del Modelo 1 con el número de titulares distintos que las contienen."""
+    if load_scored_news() is None:
+        return {"available": False, "keywords": []}
+    return {"available": True, "keywords": keyword_counts()}
 
 
 class Headline(BaseModel):

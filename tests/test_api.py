@@ -45,9 +45,12 @@ def client(table, monkeypatch, tmp_path):
     monkeypatch.setattr(fast, "get_model", get_model)
     monkeypatch.setattr(fast, "get_table", get_table)
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
-    fast.load_scored_news.cache_clear()
+    caches = (fast.load_scored_news, fast.keyword_counts, fast.same_sample_baseline)
+    for cached in caches:
+        cached.cache_clear()
     yield TestClient(fast.app)
-    fast.load_scored_news.cache_clear()
+    for cached in caches:
+        cached.cache_clear()
 
 
 def add_news_model():
@@ -137,6 +140,8 @@ def test_comparison_needs_both_models_and_uses_test_months(client):
     assert (body["start"], body["end"]) == ("2020-01", "2023-12")
     assert body["with"]["rmse"] > 0 and body["without"]["rmse"] > 0
     assert 0 <= body["p_value"] <= 1
+    # El modelo sin noticias aprende con los mismos meses que el modelo con noticias
+    assert (body["train_start"], body["train_end"]) == ("1999-02", "2019-12")
 
 
 def test_search_headlines_matches_every_word(client):
@@ -151,7 +156,28 @@ def test_search_headlines_matches_every_word(client):
     fast.load_scored_news.cache_clear()
 
     body = client.get("/headlines/search", params={"q": "OIL prices"}).json()
-    assert body["n_matches"] == 2
+    assert body["n_matches"] == 1  # titulares distintos
     assert [r["title"] for r in body["results"]] == ["Oil prices soar"]  # sin repetidos
     assert body["results"][0]["date"] == "2021-07-02"  # el más reciente
     assert client.get("/headlines/search", params={"q": "x"}).status_code == 422
+
+
+def test_keywords_count_whole_words_and_search_by_keyword(client, tmp_path, monkeypatch):
+    config = tmp_path / "model1.yaml"
+    config.write_text("keywords_broad: [oil, food prices, wages]\n", encoding="utf-8")
+    monkeypatch.setattr(params, "MODEL1_CONFIG_PATH", config)
+    assert client.get("/headlines/keywords").json()["available"] is False
+
+    pd.DataFrame({
+        "Date": pd.to_datetime(["2021-06-02", "2021-06-10", "2021-07-01"], utc=True),
+        "Article_title": ["Oil prices soar", "Toilet paper shortage", "Food prices ease"],
+        "infla_score": [0.9, 0.1, -0.7],
+        "infla_role": ["up", "neu", "down"],
+    }).to_parquet(params.NEWS_SCORED_PATH)
+    fast.load_scored_news.cache_clear()
+
+    body = client.get("/headlines/keywords").json()
+    assert body["keywords"] == [{"keyword": "oil", "n_headlines": 1},
+                                {"keyword": "food prices", "n_headlines": 1}]  # sin "wages" (0)
+    found = client.get("/headlines/search", params={"q": "oil", "keyword": True}).json()
+    assert [r["title"] for r in found["results"]] == ["Oil prices soar"]  # no "Toilet"
