@@ -229,3 +229,4 @@ __marimo__/
 /logs/
 # Model outputs written when the app trains on demo_data
 demo_data/processed/nowcast_*.csv
+reports/sanity_sample_news_index.csv
