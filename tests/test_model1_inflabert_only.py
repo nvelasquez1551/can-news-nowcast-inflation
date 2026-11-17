@@ -71,7 +71,7 @@ def test_load_both_scorers_skips_finbert_when_disabled(tmp_path, monkeypatch):
 
 
 def test_score_frame_ignores_finbert_scorer_when_disabled(tmp_path, monkeypatch):
-    def fake_score_texts(texts, scorer, *, batch_size, max_length):
+    def fake_score_texts(texts, scorer, *, batch_size, max_length, **kwargs):
         return pd.DataFrame({f"{scorer}_score": [0.5] * len(texts)})
 
     monkeypatch.setattr(score_mod, "score_texts", fake_score_texts)
