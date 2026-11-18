@@ -3,7 +3,7 @@
     python -m nowcast.interface.main            # train + predict
     python -c "from nowcast.interface.main import train; train(use_news=True)"
                                                 # modelos con noticias: linear_news, xgb_news
-    RUN_TEST=1 python -m nowcast.interface.main # además evalúa en 2020-2023
+    RUN_TEST=1 python -m nowcast.interface.main # además evalúa en el test (2021-01..2026-10)
 """
 
 import pandas as pd
@@ -26,7 +26,7 @@ def load_table(use_news: bool | None = None) -> tuple[pd.DataFrame, list[str]]:
 
 
 def train(use_news: bool | None = None) -> pd.DataFrame:
-    """CV en train (hasta 2019), ajuste final y guardado. No toca el test.
+    """CV en train (2007-01..2020-12), ajuste en train y guardado. No toca el test.
 
     Con noticias, los modelos se guardan como linear_news y xgb_news, así que
     los modelos macro (linear, xgb) siguen disponibles para comparar.
@@ -65,7 +65,7 @@ def train(use_news: bool | None = None) -> pd.DataFrame:
 
 
 def evaluate() -> dict[str, pd.DataFrame] | None:
-    """Evaluación en 2020-2023: fija y expanding refit. Solo con RUN_TEST=1."""
+    """Evaluación en el test (2021-01..2026-10): fija y expanding refit. Solo con RUN_TEST=1."""
     if not params.RUN_TEST:
         print("RUN_TEST=0: test evaluation skipped (set RUN_TEST=1 to run it)")
         return None
@@ -73,7 +73,7 @@ def evaluate() -> dict[str, pd.DataFrame] | None:
     table, cols = load_table()
     train_df, test_df = split_by_date(table)
 
-    # 1. Evaluación fija: modelos guardados por train() (1999-2019)
+    # 1. Evaluación fija: modelos guardados por train() (2007-01..2020-12)
     fitted = {}
     for name in params.MODEL_NAMES:
         pipe, metadata = load_model(name)

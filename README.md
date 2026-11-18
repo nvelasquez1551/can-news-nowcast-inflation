@@ -91,7 +91,7 @@ app/streamlit_app.py  ──HTTP──>  nowcast/api/fast.py  ──>  models/ (
 2. Copy `.env.example` to `.env` and set `FRED_API_KEY` (free at fred.stlouisfed.org > My Account > API Keys).
 3. `make data` — downloads FRED into `data/raw/macro_monthly_raw.csv`.
 4. `make train` — trains the linear model and XGBoost and saves them in `models/`.
-5. `make train_news` — same models with the Model 1 news index (`linear_news`, `xgb_news`). Needs `data/processed/news_index_monthly.csv`; copy `news_scored.parquet` there too for the headlines.
+5. `make train_news` — same models with the Model 1 news index (`linear_news`, `xgb_news`). Needs `data/processed/news_index_union_rescaled.csv`; copy `news_scored.parquet` there too for the headlines. The API only serves `linear` and `linear_news`; the final saved models are trained on all months (2007-01..2026-10).
 
 **Every time**, in two terminals:
 
@@ -106,11 +106,11 @@ What the frontend shows:
 - **Titulares del mes:** when `data/processed/news_scored.parquet` (Model 1 output) is present, the headlines of the month with the most inflationary and disinflationary InflaBERT scores.
 - **Busca un titular:** type a few words and pick one of the matching headlines from the Model 1 data to see its InflaBERT label. Any new text can also be classified when PyTorch is installed.
 
-- **¿Ayudan las noticias?:** error in 2020–2023 of the same model with and without news (saved models trained through 2019), with a Diebold-Mariano p-value.
+- **¿Ayudan las noticias?:** out-of-sample RMSE of the linear model with and without news, both refit live on 2007-01..2020-12 and scored on 2021-01..2026-10 (68 months; 2025-10 and 2025-11 have no official CPI), with a Diebold-Mariano p-value.
 
-When the news models exist, the app uses `linear_news` by default and the bars include a **Noticias** driver; the other models can be picked under *Ajustes*.
+When the news model exists, the app uses `linear_news` by default and the bars include a **Noticias** driver; the macro-only `linear` can be picked under *Ajustes*. If the news model or the news index for a month is missing, the API falls back to `linear` and says so (`fallback`).
 
-API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|xgb|linear_news|xgb_news`, `/comparison?model=linear|xgb`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...`, `POST /classify`. The frontend reads the API address from `API_URL` (`make run_frontend` sets it to `http://localhost:8000`), which is what changes when the API moves to the cloud.
+API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|linear_news`, `/comparison`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...`, `POST /classify`. The frontend reads the API address from `API_URL` (`make run_frontend` sets it to `http://localhost:8000`), which is what changes when the API moves to the cloud.
 
 ### Without a separate API (Streamlit Cloud)
 

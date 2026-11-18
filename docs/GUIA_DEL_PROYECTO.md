@@ -10,7 +10,7 @@ El dato oficial de inflación de EE. UU. (el IPC) se publica unas dos semanas de
 
 ## 2. La respuesta
 
-**No.** En 2020–2023, meses que el modelo no vio al entrenarse, la estimación se equivoca en promedio lo mismo con y sin noticias (unos 0,19 puntos de inflación mensual), siempre que los dos modelos aprendan con los mismos años (2007–2019). Con XGBoost, añadir las noticias empeora el resultado.
+**No.** En 2021-01..2026-10 (68 meses que el modelo no vio al entrenarse; 2025-10 y 2025-11 no tienen dato oficial de IPC), la regresión lineal se equivoca lo mismo con y sin noticias: RMSE 0,164 sin noticias y 0,165 con noticias, diferencia no significativa (Diebold-Mariano, p = 0,37). Los dos modelos aprenden con los mismos años (2007–2020). Con XGBoost, añadir las noticias empeora el resultado.
 
 Las noticias sí se mueven con la inflación (correlación de 0,46), pero no aportan información que el modelo no tenga ya con la gasolina, el petróleo y la inflación de meses anteriores. El estudio de referencia (InflaBERT, EPFL) llegó a la misma conclusión. Como decía el pitch: si las noticias no mejoran la estimación, se muestra igual, porque la comparación es el resultado.
 
@@ -94,7 +94,7 @@ make run_frontend  # terminal 2: la app, en http://localhost:8501
 1. **Pitch y especificaciones.** Pregunta, datos (FNSPID y FRED) y método de los dos modelos.
 2. **Modelo 1.** Código para leer las noticias en streaming, filtrarlas y puntuarlas. Mejoras: corte a fin de mes (decisión del equipo), filtro de titulares de emisiones de bonos ("XYZ prices $500M notes offering"), menos memoria y reanudación tras desconexiones de Colab.
 3. **Ejecución en Colab.** 15,5 millones de noticias leídas, 422.756 sobre precios y nota mensual desde enero de 2007 (antes casi no hay noticias de precios en FNSPID).
-4. **Modelo 2** (Nicolás). Variables de FRED disponibles a fin de mes, regresión lineal y XGBoost, prueba con reentrenamiento mes a mes en 2020–2023.
+4. **Modelo 2** (Nicolás). Variables de FRED disponibles a fin de mes, regresión lineal y XGBoost, prueba con reentrenamiento mes a mes en 2021-01..2026-10.
 5. **Modelos con noticias.** `linear_news` y `xgb_news`, guardados junto a los modelos sin noticias.
 6. **Explicación de la estimación.** Cuánto aporta cada factor, de forma exacta: los aportes suman la estimación.
 7. **API y app.** Estimación, motivos del cambio, noticias del mes, comparación justa con y sin noticias, y búsqueda de titulares por palabra clave.
@@ -104,7 +104,7 @@ make run_frontend  # terminal 2: la app, en http://localhost:8501
 
 - **InflaBERT acierta unas 6 de cada 10 veces.** Algunos titulares salen mal clasificados; por ejemplo, "Gasoline Prices Take a Dive" sale como "más inflación".
 - **FNSPID trata sobre empresas, no sobre economía.** Muchas noticias de "petróleo" son de empresas petroleras.
-- **Los años 2020–2023 se han mirado muchas veces** durante el proyecto, así que ya no son una prueba "fresca".
+- **Los años 2021–2023 se habían mirado antes** (el test anterior era 2020–2023), así que solo 2024–2026 es una prueba realmente "fresca".
 - **El COVID** (primavera de 2020) concentra buena parte del error de todos los modelos.
 - **La web usa una copia de los datos** (`demo_data/`). Si se vuelve a ejecutar el Modelo 1 o se descargan datos nuevos de FRED, hay que actualizarla.
 

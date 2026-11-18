@@ -3,7 +3,7 @@
 Copia la lógica de los notebooks 03_train_macro_models_v1 y 03b_expanding_refit_v1:
 - build_model: Pipeline completo (preprocesador + modelo).
 - cross_validate / grid_search: TimeSeriesSplit (make_cv) solo sobre train.
-- evaluate: evaluación fija (train 1999-2019, test 2020-2023) con baselines.
+- evaluate: evaluación fija (train 2007-01..2020-12, test 2021-01..2026-10) con baselines.
 - diebold_mariano: pérdida cuadrática, h=1, corrección HLN.
 - expanding_forecast: refit mensual, re-búsqueda de XGBoost cada RETUNE_EVERY meses.
 

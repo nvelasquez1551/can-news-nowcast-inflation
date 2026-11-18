@@ -20,7 +20,8 @@ def news_table(table: pd.DataFrame) -> pd.DataFrame:
 
 @pytest.fixture
 def client(table, monkeypatch, tmp_path):
-    tables = {"macro": table, "news": news_table(table)}
+    # Como el índice real, las noticias empiezan en TRAIN_START (antes: solo macro)
+    tables = {"macro": table, "news": news_table(table).loc[params.TRAIN_START:]}
     fitted = {}
     for name, cols, key in (("linear", params.FEATURES, "macro"),
                             ("linear_news", params.FEATURES + params.NEWS_COLS, "news")):
@@ -46,7 +47,7 @@ def client(table, monkeypatch, tmp_path):
     monkeypatch.setattr(fast, "get_model", get_model)
     monkeypatch.setattr(fast, "get_table", get_table)
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
-    caches = (fast.load_scored_news, fast.keyword_counts, fast.same_sample_baseline)
+    caches = (fast.load_scored_news, fast.keyword_counts, fast.live_comparison)
     for cached in caches:
         cached.cache_clear()
     yield TestClient(fast.app)
@@ -88,7 +89,9 @@ def test_history_matches_table(client, table):
     rows = client.get("/history").json()["rows"]
     assert len(rows) == len(table)
     assert rows[-1]["month"] == f"{table.index[-1]:%Y-%m}" and rows[-1]["in_sample"] is False
-    assert rows[0]["in_sample"] is True
+    by_month = {r["month"]: r["in_sample"] for r in rows}
+    assert by_month[f"{pd.Timestamp(params.TRAIN_START):%Y-%m}"] is True
+    assert rows[0]["in_sample"] is False  # antes de TRAIN_START: el modelo no lo vio
 
 
 def test_headlines_without_and_with_scored_news(client):
@@ -133,18 +136,89 @@ def test_news_model_explains_news_contribution(client):
     assert set(body["news"]) == set(params.NEWS_COLS)
 
 
-def test_comparison_needs_both_models_and_uses_test_months(client):
-    assert client.get("/comparison").status_code == 404
-    add_news_model()
-    body = client.get("/comparison", params={"model": "linear"}).json()
+def test_comparison_refits_live_out_of_sample(client, table, monkeypatch):
+    # No usa los modelos guardados: funciona aunque no haya ninguno
+    def no_saved_models(name):
+        raise AssertionError("comparison must not load saved models")
+    monkeypatch.setattr(fast, "get_model", no_saved_models)
+    body = client.get("/comparison").json()
+
+    month = lambda value: f"{pd.Timestamp(value):%Y-%m}"
+    assert body["evaluation"] == "out_of_sample" and body["model"] == "linear"
+    assert (body["train_start"], body["train_end"]) == (month(params.TRAIN_START),
+                                                        month(params.TRAIN_END))
+    assert (body["test_start"], body["test_end"]) == (month(params.TEST_START),
+                                                      month(params.TEST_END))
     assert body["n_months"] == params.N_TEST_MONTHS
-    assert (body["start"], body["end"]) == (f"{pd.Timestamp(params.TEST_START):%Y-%m}",
-                                            f"{pd.Timestamp(params.TEST_END):%Y-%m}")
-    assert body["with"]["rmse"] > 0 and body["without"]["rmse"] > 0
+    assert body["excluded_months"] == [month(m) for m in params.TARGET_NAN_MONTHS]
+
+    # Mismo resultado que ajustar a mano las dos lineales con los mismos meses de train
+    train, test = split_by_date(news_table(table).loc[params.TRAIN_START:])
+    for key, cols in (("without", params.FEATURES),
+                      ("with", params.FEATURES + params.NEWS_COLS)):
+        pipe = build_model("linear", cols).fit(train[cols], train[params.TARGET])
+        error = test[params.TARGET] - pipe.predict(test[cols])
+        assert body[key]["rmse"] == pytest.approx(np.sqrt((error ** 2).mean()))
+        assert body[key]["mae"] == pytest.approx(error.abs().mean())
     assert 0 <= body["p_value"] <= 1
-    # El modelo sin noticias aprende con los mismos meses que el modelo con noticias
-    assert (body["train_start"], body["train_end"]) == (
-        f"{pd.Timestamp(params.TRAIN_START):%Y-%m}", f"{pd.Timestamp(params.TRAIN_END):%Y-%m}")
+    assert body["significant_5pct"] == (body["p_value"] < 0.05)
+
+
+def test_default_model_is_linear_news_with_fallbacks(client, monkeypatch):
+    # Sin linear_news entrenado: lineal macro y se avisa
+    body = client.get("/nowcast").json()
+    assert body["model"] == "linear" and "linear_news is not trained" in body["fallback"]
+
+    add_news_model()
+    body = client.get("/nowcast").json()
+    assert body["model"] == "linear_news" and body["fallback"] is None
+
+    # Mes sin índice de noticias (antes de TRAIN_START): ese mes usa la lineal macro
+    early = f"{pd.Timestamp(params.TRAIN_START) - pd.DateOffset(years=2):%Y-%m}"
+    body = client.get("/nowcast", params={"month": early}).json()
+    assert body["model"] == "linear" and body["news"] is None
+    assert f"no news index for {early}" in body["fallback"]
+
+    # Falta el archivo del índice de noticias: todo cae a la lineal macro
+    tables_get = fast.get_table
+    def missing_news(features):
+        if params.NEWS_COLS[0] in features:
+            raise fast.HTTPException(503, "model uses news but the news index is missing")
+        return tables_get(features)
+    monkeypatch.setattr(fast, "get_table", missing_news)
+    body = client.get("/nowcast").json()
+    assert body["model"] == "linear" and "news index is missing" in body["fallback"]
+
+
+def test_xgb_is_not_served(client):
+    (params.MODELS_DIR / "xgb_20260101-000000-000000.joblib").touch()
+    assert "xgb" not in [m["name"] for m in client.get("/models").json()["models"]]
+    assert client.get("/nowcast", params={"model": "xgb"}).status_code == 404
+
+
+def test_in_sample_follows_saved_model_training_window(client):
+    month = lambda value: f"{pd.Timestamp(value):%Y-%m}"
+    seen = client.get("/nowcast", params={"month": month(params.TRAIN_END)}).json()
+    assert seen["in_sample"] is True and seen["sample"] == "in_sample"
+    after = month(pd.Timestamp(params.TRAIN_END) + pd.DateOffset(months=6))
+    assert client.get("/nowcast", params={"month": after}).json()["sample"] == "out_of_sample"
+    before = month(pd.Timestamp(params.TRAIN_START) - pd.DateOffset(years=2))
+    assert client.get("/nowcast", params={"month": before}).json()["sample"] == "before_training"
+    rows = pd.DataFrame(client.get("/history").json()["rows"])
+    inside = rows["month"].between(month(params.TRAIN_START), month(params.TRAIN_END))
+    assert (rows["in_sample"] == inside).all()
+
+
+def test_months_without_cpi_do_not_crash(client):
+    for month in ("2025-10", "2025-11"):
+        response = client.get("/nowcast", params={"month": month})
+        assert response.status_code == 404 and "no official CPI" in response.json()["detail"]
+    response = client.get("/nowcast", params={"month": "2025-12"})
+    assert response.status_code == 404 and "previous month" in response.json()["detail"]
+    months = client.get("/months").json()["months"]
+    assert not {"2025-10", "2025-11", "2025-12"} & set(months)
+    history = [r["month"] for r in client.get("/history").json()["rows"]]
+    assert not {"2025-10", "2025-11"} & set(history)
 
 
 def test_search_headlines_matches_every_word(client):

@@ -116,7 +116,7 @@ CPI_INTERP_FLAG = "cpi_interpolated"
 # y = NaN, así no entran en train ni en test.
 TARGET_NAN_MONTHS = ["2025-10-01", "2025-11-01"]
 
-# Mes calendario como feature (v1). Se decide por CV (hasta 2019), nunca por test.
+# Mes calendario como feature (v1). Se decide por CV (train hasta 2020-12), nunca por test.
 USE_MONTH = True
 MONTH_COL = "month"
 
@@ -153,7 +153,7 @@ TEST_PERIODS = {
     "full": (TEST_START, TEST_END),
 }
 
-# 2021-2022 ya se vio en v0 y v1 (test 2020-2023). Solo se evalúa con RUN_TEST=1.
+# Parte del test (2021-2023) ya se vio en v0 y v1. Solo se evalúa con RUN_TEST=1.
 RUN_TEST = os.environ.get("RUN_TEST", "0").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------

@@ -44,12 +44,12 @@ The team notebook `02 - Transform macro data` encodes this table as `AVAILABILIT
 
 ### 3.1 CPI release dates
 
-At the end of month *t*, CPI for *t-1* has always been published in the 2020 to 2023 test period (BLS releases it around mid-month *t*). So `y_{t-1}` is a valid feature and no release calendar or FRED API key is needed for the base model. Known exceptions outside the test period (e.g. the October 2025 CPI, never published because of the government shutdown) must be checked if the sample is extended.
+At the end of month *t*, CPI for *t-1* was published in the original 2020-01..2023-12 test period (updated test: 2021-01..2026-10) (BLS releases it around mid-month *t*). So `y_{t-1}` is a valid feature and no release calendar or FRED API key is needed for the base model. Known exceptions outside the test period (e.g. the October 2025 CPI, never published because of the government shutdown) must be checked if the sample is extended.
 
 ## 4. Sample
 
 - Start: the Model 1 start month *S* (`data/processed/start_month.txt`), or the first month where all macro features exist, whichever is later.
-- Training: *S* to 2019-12. Test: 2020-01 to 2023-12 (48 months).
+- Training: *S* to 2020-12. Test: 2021-01 to 2026-10 (68 months; 2025-10 and 2025-11 dropped because the October 2025 CPI was never published). Original spec: training to 2019-12, test 2020-01..2023-12.
 - Check that FNSPID still has enough articles in the last test months; if 2023 coverage drops, report it and end the test period earlier.
 - The macro-only notebook starts in 1999. For the with/without NEWS comparison every variant must start at *S*; a macro-only run from 1999 can be reported separately.
 - All feature sets in Section 5 use **exactly the same months**. Months where any NEWS column is NaN (zero articles) are dropped from every variant and logged, so the comparison stays fair.
