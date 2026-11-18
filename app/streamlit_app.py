@@ -201,49 +201,35 @@ def news_section(month: str, result: dict, drivers: pd.DataFrame) -> None:
                 st.markdown(f"- {item['title']}")
 
 
-def comparison_section(model: str) -> None:
-    st.markdown("### ¿Ayudan las noticias a estimar mejor?")
+def get_comparison() -> dict | None:
     try:
-        result = api_get("/comparison", model=model)
+        return api_get("/comparison")
     except RuntimeError:
-        st.caption("Para comparar hace falta entrenar el modelo con y sin noticias "
-                   "(`make train` y `make train_news`).")
+        return None
+
+
+def comparison_section(result: dict | None) -> None:
+    """Con y sin noticias, fuera de muestra: re-ajustadas con datos hasta 2020-12."""
+    st.markdown("### ¿Ayudan las noticias a estimar mejor?")
+    if result is None:
+        st.caption("La comparación necesita el índice de noticias y los datos de prueba completos.")
         return
-    without, with_news = result["without"]["mae"], result["with"]["mae"]
-    period = f"{month_name(result['start'])} y {month_name(result['end'])}"
-    if abs(with_news - without) < 0.01:
-        verdict = ("Con y sin noticias se equivoca prácticamente lo mismo: las noticias "
-                   "**no mejoran** la estimación.")
-    elif with_news < without and result["p_value"] < 0.1:
-        verdict = "Con estos datos, las noticias **sí mejoran** la estimación."
-    elif with_news < without:
-        verdict = ("Con noticias se equivocó un poco menos, pero la diferencia es tan pequeña "
-                   "que podría ser casualidad.")
+    without, with_news = result["without"]["rmse"], result["with"]["rmse"]
+    left, right = st.columns(2)
+    left.metric("Error sin noticias (RMSE)", num(without, 3))
+    right.metric("Error con noticias (RMSE)", num(with_news, 3),
+                 delta=num(with_news - without, 3, sign=True), delta_color="inverse")
+    if result["significant_5pct"]:
+        better = "más bajo" if with_news < without else "más alto"
+        verdict = f"Con noticias el error es {better} y la diferencia es significativa"
     else:
-        verdict = "Con estos datos, las noticias **no mejoran** la estimación."
-    st.write(f"Entre {period}, meses que el modelo no vio al entrenarse, la estimación se "
-             f"equivocó en promedio **{num(without)} puntos** sin noticias y "
-             f"**{num(with_news)} puntos** con noticias. {verdict}")
-    data = pd.DataFrame({"modelo": ["Sin noticias", "Con noticias"],
-                         "error": [without, with_news]})
-    data["label"] = data["error"].map(num)
-    bars = alt.Chart(data).mark_bar(cornerRadius=3, height=26).encode(
-        x=alt.X("error:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False)),
-        y=alt.Y("modelo:N", sort=None, title=None,
-                axis=alt.Axis(labelFontSize=13, ticks=False, domain=False)),
-        color=alt.Color("modelo:N", legend=None,
-                        scale=alt.Scale(domain=["Sin noticias", "Con noticias"],
-                                        range=[NAVY, AMBER])),
-    )
-    labels = bars.mark_text(align="left", dx=6, fontSize=12).encode(
-        text="label:N", color=alt.value(NAVY))
-    st.altair_chart((bars + labels).properties(height=alt.Step(40)).configure_view(stroke=None),
-                    width="stretch")
-    first_year, last_year = result["train_start"][:4], result["train_end"][:4]
-    st.caption(f"Error medio por mes, en puntos de inflación mensual. Para que la comparación "
-               f"sea justa, los dos modelos aprendieron con los mismos años ({first_year}–"
-               f"{last_year}): antes de {first_year} no hay noticias. Los meses del COVID "
-               "(primavera de 2020) son los más difíciles para cualquier modelo.")
+        verdict = "La diferencia **no es significativa**: las noticias no mejoran la estimación"
+    st.write(f"{verdict} (prueba de Diebold-Mariano, p = {num(result['p_value'], 2)}).")
+    st.caption(f"Comparación fuera de muestra: los dos modelos lineales se entrenaron con datos "
+               f"de {result['train_start']} a {result['train_end']} y se evaluaron en "
+               f"{result['n_months']} meses que no vieron ({result['test_start']}.."
+               f"{result['test_end']}; sin {', '.join(result['excluded_months'])}, que no "
+               "tienen dato oficial de IPC). RMSE en puntos de inflación mensual.")
 
 
 VERDICT = {"up": "más inflación", "down": "menos inflación", "neu": "nada claro sobre precios"}
@@ -337,6 +323,17 @@ try:
     </div>
     """, unsafe_allow_html=True)
 
+    if result.get("fallback"):
+        st.info(f"Se usó el modelo sin noticias: {result['fallback']}.")
+    comparison = get_comparison()
+    comparison_section(comparison)
+    trained = f"Modelo entrenado con datos hasta {result['train_end']}"
+    if comparison is not None:
+        trained += (f"; la comparación es fuera de muestra (entrenada hasta "
+                    f"{comparison['train_end']}, evaluada {comparison['test_start']}.."
+                    f"{comparison['test_end']})")
+    st.caption(trained + ".")
+
     st.markdown("### Qué movió la estimación")
     st.write(explain(result, drivers))
     st.altair_chart(factors_chart(drivers), width="stretch")
@@ -349,13 +346,16 @@ try:
     start = pd.Timestamp(month) - pd.DateOffset(years=4)
     st.altair_chart(history_chart(history[history["month"].between(start, pd.Timestamp(month))],
                                   month), width="stretch")
-    if result["in_sample"]:
-        st.caption("Ojo: el modelo aprendió con datos hasta 2019, así que este mes ya lo conocía.")
+    if result["sample"] == "in_sample":
+        st.caption(f"Ojo: el modelo se entrenó con datos hasta {result['train_end']}, así que "
+                   "este mes ya lo conocía. Esta estimación no es un pronóstico fuera de muestra.")
+    elif result["sample"] == "before_training":
+        st.caption(f"Este mes es anterior a los datos de entrenamiento "
+                   f"(desde {result['train_start']}).")
     else:
-        st.caption("Desde 2020 el modelo no había visto estos datos: es una prueba real.")
+        st.caption("El modelo no había visto este mes al entrenarse.")
 
     news_section(month, result, drivers)
-    comparison_section(model)
 
     headline_search()
 except requests.ConnectionError:

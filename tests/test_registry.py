@@ -1,6 +1,7 @@
 """Tests de nowcast.ml_logic.registry: guardar y cargar modelos con metadata."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from nowcast import params
@@ -21,7 +22,8 @@ def test_save_and_load_roundtrip(table, tmp_path):
     np.testing.assert_array_equal(loaded.predict(X), pipe.predict(X))
     assert meta["features"] == params.FEATURES
     assert meta["hyperparameters"] == hp
-    assert meta["train_end"] == "2019-12" and meta["n_train"] == len(X)
+    assert meta["train_end"] == f"{pd.Timestamp(params.TRAIN_END):%Y-%m}"
+    assert meta["n_train"] == len(X)
     assert meta["cv_rmse_mean"] == 0.5
 
 

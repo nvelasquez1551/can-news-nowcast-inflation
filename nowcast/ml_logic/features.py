@@ -16,13 +16,40 @@ def source_of(col: str) -> str:
     return col.split("_")[0] if col.startswith(("oil", "gas")) else col
 
 
+def fill_cpi_gaps(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    """Interpola log(x) en CPI_INTERP_MONTHS para CPI_INTERP_COLS, solo si falta.
+
+    Devuelve el raw rellenado y una bandera por mes (True = algún valor interpolado).
+    Solo se usa para features: el target de esos meses se anula en build_features.
+    """
+    out = raw.copy()
+    flag = pd.Series(False, index=raw.index, name=params.CPI_INTERP_FLAG)
+    months = pd.DatetimeIndex(params.CPI_INTERP_MONTHS).intersection(raw.index)
+    for col in params.CPI_INTERP_COLS:
+        missing = months[out.loc[months, col].isna()]
+        if missing.empty:
+            continue
+        filled = np.log(out[col]).interpolate(method="linear", limit_area="inside")
+        out.loc[missing, col] = np.exp(filled.loc[missing])
+        flag.loc[missing] = True
+    return out, flag
+
+
 def build_features(raw: pd.DataFrame) -> pd.DataFrame:
-    """Target y las 14 features del notebook 02. No se elimina ninguna fila aquí."""
+    """Target y las 14 features del notebook 02. No se elimina ninguna fila aquí.
+
+    El IPC faltante de CPI_INTERP_MONTHS se interpola para las features, pero el
+    target y de TARGET_NAN_MONTHS queda en NaN (no hay target interpolado).
+    """
+    raw, interpolated = fill_cpi_gaps(raw)
     out = pd.DataFrame(index=raw.index)
 
-    # Target
-    out["y"] = 100 * np.log(raw["cpi"]).diff()
+    # Target (con el IPC rellenado: se usa para los rezagos y medias de y)
+    y_full = 100 * np.log(raw["cpi"]).diff()
+    target_nan = raw.index.isin(pd.DatetimeIndex(params.TARGET_NAN_MONTHS))
+    out["y"] = y_full.mask(target_nan)
     out["y_annualized"] = 100 * ((1 + out["y"] / 100) ** 12 - 1)
+    out[params.CPI_INTERP_FLAG] = interpolated
 
     # Paso 2: cambios mensuales (exp queda en niveles)
     changes = pd.DataFrame(index=raw.index)
@@ -33,11 +60,11 @@ def build_features(raw: pd.DataFrame) -> pd.DataFrame:
 
     # Paso 3: rezagos del IPC
     for k in range(1, params.N_CPI_LAGS + 1):
-        out[f"y_lag{k}"] = out["y"].shift(k)
+        out[f"y_lag{k}"] = y_full.shift(k)
 
     # Paso 4: medias móviles de valores PASADOS (shift(1) deja fuera el mes t)
     window = params.MA_WINDOW
-    out[f"y_ma{window}"] = out["y"].shift(1).rolling(window).mean()
+    out[f"y_ma{window}"] = y_full.shift(1).rolling(window).mean()
     out[f"cpi_core_chg_ma{window}"] = (
         changes["cpi_core_chg"].shift(1).rolling(window).mean()
     )

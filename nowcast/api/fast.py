@@ -11,11 +11,13 @@ Endpoints:
     GET  /headlines?month=    titulares del mes que más empujan al alza / baja (Modelo 1)
     GET  /headlines/search?q= titulares de la base que contienen esas palabras, con su puntaje
     GET  /headlines/keywords  palabras clave del Modelo 1 y cuántos titulares tiene cada una
-    GET  /comparison          error en 2020-2023 del mismo modelo con y sin noticias
+    GET  /comparison          error fuera de muestra (test 2021-01..2026-10) de la lineal con y sin noticias
     POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1)
 
-`model` acepta linear, xgb, linear_news y xgb_news. Sin `model`, se usa el modelo
-principal con noticias si está entrenado, y si no, el modelo principal macro.
+`model` acepta linear y linear_news. Sin `model`, se usa linear_news si está entrenado;
+si falta el modelo con noticias o el índice de noticias de un mes, se usa linear (solo
+macro) y la respuesta lo dice en `fallback`. Los modelos guardados son los finales
+(entrenados con todos los meses): `in_sample` marca los meses que vieron.
 """
 
 import re
@@ -29,7 +31,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from nowcast import params
-from nowcast.ml_logic.data import load_news_index, load_raw_data
+from nowcast.ml_logic.data import load_news_index, load_raw_data, split_by_date
 from nowcast.ml_logic.explain import describe_change, explain_change
 from nowcast.ml_logic.features import build_model_table
 from nowcast.ml_logic.model import build_model, diebold_mariano
@@ -42,11 +44,16 @@ def annualize(monthly: float) -> float:
     return 100 * ((1 + monthly / 100) ** 12 - 1)
 
 
-MODEL_LABELS = {"linear": "Regresión lineal", "xgb": "XGBoost"}
+MODEL_LABELS = {"linear": "Regresión lineal"}
+# La API solo sirve la regresión lineal (experimento final). XGBoost sigue en el paquete
+# para entrenar y comparar, pero no se expone aquí.
+FALLBACK_MODEL = params.PRIMARY_MODEL                                # linear (solo macro)
+DEFAULT_MODEL = f"{params.PRIMARY_MODEL}{params.NEWS_MODEL_SUFFIX}"  # linear_news
+API_MODELS = [FALLBACK_MODEL, DEFAULT_MODEL]
 
 
 def model_names() -> list[str]:
-    return params.MODEL_NAMES + [f"{m}{params.NEWS_MODEL_SUFFIX}" for m in params.MODEL_NAMES]
+    return API_MODELS
 
 
 def available_models() -> list[str]:
@@ -54,11 +61,15 @@ def available_models() -> list[str]:
             if any(params.MODELS_DIR.glob(f"{name}_[0-9]*.joblib"))]
 
 
+def uses_news(features) -> bool:
+    return all(col in features for col in params.NEWS_COLS)
+
+
 def resolve_model(model_name: str | None) -> str:
+    """Modelo pedido, o linear_news por defecto si está entrenado (si no, linear)."""
     if model_name is not None:
         return model_name
-    with_news = f"{params.PRIMARY_MODEL}{params.NEWS_MODEL_SUFFIX}"
-    return with_news if with_news in available_models() else params.PRIMARY_MODEL
+    return DEFAULT_MODEL if DEFAULT_MODEL in available_models() else FALLBACK_MODEL
 
 
 @lru_cache
@@ -74,33 +85,61 @@ def get_model(model_name: str):
 @lru_cache
 def get_table(features: tuple[str, ...]) -> pd.DataFrame:
     """Tabla del modelo con las features con las que se entrenó (con noticias si las usa)."""
-    uses_news = all(col in features for col in params.NEWS_COLS)
-    news = load_news_index() if uses_news else None
-    if uses_news and news is None:
+    news_model = uses_news(features)
+    news = load_news_index() if news_model else None
+    if news_model and news is None:
         raise HTTPException(503, f"model uses news but {params.NEWS_INDEX_PATH} is missing")
     try:
         raw = load_raw_data()
     except FileNotFoundError as exc:
         raise HTTPException(503, f"{params.RAW_MACRO_PATH} is missing; run make data") from exc
-    return build_model_table(raw, news=news, use_news=uses_news)
+    return build_model_table(raw, news=news, use_news=news_model)
 
 
 def model_and_data(model_name: str | None):
-    pipe, metadata = get_model(resolve_model(model_name))
-    table = get_table(tuple(metadata["features"]))
-    return pipe, metadata, table, table[metadata["features"]]
+    """(pipe, metadata, table, X, fallback). Si el modelo con noticias no está entrenado
+    o falta el índice de noticias, usa la lineal solo macro y lo dice en `fallback`."""
+    name = model_name or DEFAULT_MODEL
+    if name not in model_names():
+        raise HTTPException(404, f"unknown model '{name}', use one of {model_names()}")
+    fallback = None
+    if name != FALLBACK_MODEL and name not in available_models():
+        fallback = f"{name} is not trained: using macro-only {FALLBACK_MODEL}"
+    else:
+        pipe, metadata = get_model(name)
+        try:
+            table = get_table(tuple(metadata["features"]))
+        except HTTPException as exc:
+            if name == FALLBACK_MODEL or exc.status_code != 503:
+                raise
+            fallback = f"{exc.detail}: using macro-only {FALLBACK_MODEL}"
+    if fallback is not None:
+        pipe, metadata = get_model(FALLBACK_MODEL)
+        table = get_table(tuple(metadata["features"]))
+    return pipe, metadata, table, table[metadata["features"]], fallback
+
+
+def to_month(value: str) -> pd.Timestamp:
+    try:
+        return pd.Timestamp(value).to_period("M").to_timestamp()
+    except ValueError as exc:
+        raise HTTPException(422, f"month must look like YYYY-MM, got '{value}'") from exc
 
 
 def parse_month(value: str | None, available: pd.DatetimeIndex) -> pd.Timestamp:
     if value is None:
         return available[-1]
-    try:
-        month = pd.Timestamp(value).to_period("M").to_timestamp()
-    except ValueError as exc:
-        raise HTTPException(422, f"month must look like YYYY-MM, got '{value}'") from exc
+    month = to_month(value)
     if month not in available:
-        raise HTTPException(404, f"no nowcast for {month:%Y-%m}; "
-                                 f"available {available[0]:%Y-%m} to {available[-1]:%Y-%m}")
+        no_cpi = pd.DatetimeIndex(params.TARGET_NAN_MONTHS)
+        if month in no_cpi:
+            reason = ("no official CPI target for this month (the BLS did not publish the "
+                      "October 2025 CPI, and y for 2025-10 and 2025-11 depends on it)")
+        elif month - pd.offsets.MonthBegin(1) in no_cpi:
+            reason = "the previous month has no CPI target, so the change cannot be explained"
+        else:
+            reason = f"available {available[0]:%Y-%m} to {available[-1]:%Y-%m}"
+        raise HTTPException(404, f"no nowcast for {month:%Y-%m}: {reason}")
     return month
 
 
@@ -110,19 +149,29 @@ def nowcast_months(table: pd.DataFrame) -> pd.DatetimeIndex:
     return table.index[previous.isin(table.index)]
 
 
-ModelName = Query(None, description="linear, xgb, linear_news o xgb_news")
+def sample_of(month: pd.Timestamp, metadata: dict) -> str:
+    """in_sample = el modelo guardado vio ese mes al entrenarse (train_start..train_end)."""
+    if month < pd.Timestamp(metadata["train_start"]):
+        return "before_training"
+    if month > pd.Timestamp(metadata["train_end"]):
+        return "out_of_sample"
+    return "in_sample"
+
+
+ModelName = Query(None, description="linear o linear_news (por defecto linear_news)")
 
 
 @app.get("/")
 def root(model: str | None = ModelName):
-    _, metadata, table, _ = model_and_data(model)
+    _, metadata, table, _, fallback = model_and_data(model)
     return {
         "status": "ok",
         "model": metadata["model_name"],
+        "fallback": fallback,
         "trained_at": metadata["trained_at"],
         "train_start": metadata["train_start"],
         "train_end": metadata["train_end"],
-        "uses_news": all(col in metadata["features"] for col in params.NEWS_COLS),
+        "uses_news": uses_news(metadata["features"]),
         "first_month": f"{table.index[0]:%Y-%m}",
         "last_month": f"{table.index[-1]:%Y-%m}",
     }
@@ -141,37 +190,48 @@ def models():
 
 @app.get("/months")
 def months(model: str | None = ModelName):
-    _, _, table, _ = model_and_data(model)
+    _, _, table, _, _ = model_and_data(model)
     available = nowcast_months(table)
     return {"months": [f"{m:%Y-%m}" for m in available], "latest": f"{available[-1]:%Y-%m}"}
 
 
 @app.get("/history")
 def history(model: str | None = ModelName):
-    pipe, metadata, table, X = model_and_data(model)
-    train_end = pd.Timestamp(metadata["train_end"])
+    pipe, metadata, table, X, fallback = model_and_data(model)
     rows = pd.DataFrame({
         "month": table.index.strftime("%Y-%m"),
         "actual": table[params.TARGET].to_numpy(),
         "nowcast": pipe.predict(X),
-        "in_sample": (table.index <= train_end),
+        "in_sample": [sample_of(m, metadata) == "in_sample" for m in table.index],
     })
-    return {"model": metadata["model_name"], "train_end": metadata["train_end"],
+    return {"model": metadata["model_name"], "fallback": fallback,
+            "train_start": metadata["train_start"], "train_end": metadata["train_end"],
             "rows": rows.to_dict(orient="records")}
 
 
 @app.get("/nowcast")
 def nowcast(month: str | None = Query(None, description="YYYY-MM; vacío = último mes"),
             model: str | None = ModelName):
-    pipe, metadata, table, X = model_and_data(model)
-    target = parse_month(month, nowcast_months(table))
+    pipe, metadata, table, X, fallback = model_and_data(model)
+    available = nowcast_months(table)
+    # Mes sin índice de noticias: se usa la lineal solo macro para ese mes
+    if (month is not None and uses_news(metadata["features"])
+            and to_month(month) not in available):
+        macro = model_and_data(FALLBACK_MODEL)
+        if to_month(month) in nowcast_months(macro[2]):
+            pipe, metadata, table, X, _ = macro
+            available = nowcast_months(table)
+            fallback = (f"no news index for {to_month(month):%Y-%m}: "
+                        f"using macro-only {FALLBACK_MODEL}")
+    target = parse_month(month, available)
     explanation = explain_change(pipe, X, target)
     value = explanation["nowcast"]
     previous = explanation["previous_month"]
     news = None
-    if all(col in X.columns for col in params.NEWS_COLS):
+    if uses_news(X.columns):
         news = {col: {"value": float(X.loc[target, col]), "previous": float(X.loc[previous, col])}
                 for col in params.NEWS_COLS}
+    sample = sample_of(target, metadata)
     return {
         "month": f"{target:%Y-%m}",
         "nowcast": value,
@@ -183,62 +243,62 @@ def nowcast(month: str | None = Query(None, description="YYYY-MM; vacío = últi
         "base": explanation["base"],
         "summary": describe_change(explanation),
         "drivers": explanation["drivers"].to_dict(orient="records"),
-        "in_sample": bool(target <= pd.Timestamp(metadata["train_end"])),
+        "in_sample": sample == "in_sample",
+        "sample": sample,
+        "train_start": metadata["train_start"],
+        "train_end": metadata["train_end"],
         "model": metadata["model_name"],
-        "uses_news": all(col in metadata["features"] for col in params.NEWS_COLS),
+        "uses_news": uses_news(metadata["features"]),
+        "fallback": fallback,
         "news": news,
     }
 
 
 @lru_cache
-def same_sample_baseline(base: str, news_features: tuple[str, ...]):
-    """Modelo `base` sin noticias, entrenado con los meses de train de la tabla con noticias."""
-    _, base_metadata = get_model(base)
-    table = get_table(news_features)
-    train_rows = table.loc[:params.TRAIN_END]
-    cols = base_metadata["features"]
-    pipe = build_model(base, cols, base_metadata.get("hyperparameters") or None)
-    return pipe.fit(train_rows[cols], train_rows[params.TARGET])
-
-
-@app.get("/comparison")
-def comparison(model: str = Query(params.PRIMARY_MODEL, description="linear o xgb")):
-    """Mismo tipo de modelo con y sin noticias, aprendiendo con los MISMOS meses.
-
-    El modelo con noticias solo puede entrenar desde que hay noticias (2007). Para que
-    la única diferencia sean las noticias, el modelo sin noticias se re-ajusta aquí con
-    esos mismos meses de train y los hiperparámetros del modelo macro guardado.
-    Evaluación fija en 2020-2023, no el expanding refit.
-    """
-    base = model.removesuffix(params.NEWS_MODEL_SUFFIX)
-    names = {"without": base, "with": f"{base}{params.NEWS_MODEL_SUFFIX}"}
-    if not set(names.values()) <= set(available_models()):
-        raise HTTPException(404, f"train both {names['without']} and {names['with']} first")
-
-    pipe, metadata, table, X = model_and_data(names["with"])
-    without = same_sample_baseline(base, tuple(metadata["features"]))
-    macro_cols = [col for col in metadata["features"] if col not in params.NEWS_COLS]
-    test = table.loc[params.TEST_START:params.TEST_END]
-    frame = pd.DataFrame({
-        "y": test[params.TARGET],
-        "without": without.predict(test[macro_cols]),
-        "with": pipe.predict(X.loc[test.index]),
-    }, index=test.index).dropna()
+def live_comparison() -> dict:
+    """linear vs linear_news, re-ajustados AQUÍ con TRAIN_START..TRAIN_END y evaluados en
+    los meses de test (fuera de muestra). No usa los modelos finales guardados, que
+    aprendieron con todos los meses. Los dos modelos usan exactamente los mismos meses."""
+    with_cols = params.FEATURES + params.NEWS_COLS
+    table = get_table(tuple(with_cols))
+    try:
+        train, test = split_by_date(table)
+    except AssertionError as exc:
+        raise HTTPException(503, f"comparison needs the full test window: {exc}") from exc
+    frame = pd.DataFrame({"y": test[params.TARGET]}, index=test.index)
+    for key, cols in (("without", params.FEATURES), ("with", with_cols)):
+        pipe = build_model(params.PRIMARY_MODEL, cols).fit(train[cols], train[params.TARGET])
+        frame[key] = pipe.predict(test[cols])
 
     def errors(column: str) -> dict:
         error = frame["y"] - frame[column]
         return {"rmse": float((error ** 2).mean() ** 0.5), "mae": float(error.abs().mean())}
 
     dm = diebold_mariano(frame, [("with", "without")]).iloc[0]
-    train_rows = table.loc[:params.TRAIN_END]
+    window = pd.date_range(params.TEST_START, params.TEST_END, freq="MS")
     return {
-        "model": base,
-        "train_start": f"{train_rows.index[0]:%Y-%m}", "train_end": f"{train_rows.index[-1]:%Y-%m}",
-        "start": f"{frame.index[0]:%Y-%m}", "end": f"{frame.index[-1]:%Y-%m}",
+        "evaluation": "out_of_sample",
+        "description": (f"{params.PRIMARY_MODEL} with and without news, both refit on "
+                        f"{train.index[0]:%Y-%m}..{train.index[-1]:%Y-%m} and scored on "
+                        f"{len(frame)} later months the models did not see. The saved final "
+                        "models (trained on all months) are not used here."),
+        "model": params.PRIMARY_MODEL,
+        "train_start": f"{train.index[0]:%Y-%m}", "train_end": f"{train.index[-1]:%Y-%m}",
+        "n_train": len(train),
+        "test_start": f"{frame.index[0]:%Y-%m}", "test_end": f"{frame.index[-1]:%Y-%m}",
         "n_months": len(frame),
+        "excluded_months": list(window.difference(frame.index).strftime("%Y-%m")),
         "without": errors("without"), "with": errors("with"),
+        "loss": "squared error (Diebold-Mariano, h=1, HLN correction)",
         "dm_stat": float(dm["dm_stat"]), "p_value": float(dm["p_value"]),
+        "significant_5pct": bool(dm["p_value"] < 0.05),
     }
+
+
+@app.get("/comparison")
+def comparison():
+    """Error fuera de muestra de la regresión lineal con y sin noticias (ver live_comparison)."""
+    return live_comparison()
 
 
 @lru_cache

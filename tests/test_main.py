@@ -67,7 +67,7 @@ def test_flow_with_run_test_writes_all_outputs(sandbox, monkeypatch):
     assert len(out["fixed_dm"]) == len(out["expanding_dm"]) == len(params.DM_PAIRS)
     # Expanding: XGBoost re-busca cada enero, la lineal nunca
     xgb = out["expanding"][out["expanding"]["model"] == "xgb"]
-    assert xgb["retuned"].sum() == 4
+    assert xgb["retuned"].sum() == -(-params.N_TEST_MONTHS // params.RETUNE_EVERY)
     assert not out["expanding"].loc[out["expanding"]["model"] == "linear",
                                     "retuned"].any()
 

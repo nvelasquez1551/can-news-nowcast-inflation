@@ -36,7 +36,17 @@ def test_linear_pipeline_recovers_exact_linear_relation(table):
 def test_cross_validate_returns_one_rmse_per_fold(table):
     train, _ = split_by_date(table)
     folds = cross_validate(build_model("linear"), train[params.FEATURES], train["y"])
-    assert folds.shape == (params.N_SPLITS,) and (folds > 0).all()
+    n_folds = (len(train) - params.CV_MIN_TRAIN_MONTHS) // params.CV_TEST_MONTHS
+    assert folds.shape == (n_folds,) and (folds > 0).all()
+
+
+def test_make_cv_min_train_and_fold_size():
+    splits = list(model.make_cv(168).split(np.zeros(168)))
+    assert len(splits) == 7
+    assert len(splits[0][0]) == params.CV_MIN_TRAIN_MONTHS
+    assert all(len(te) == params.CV_TEST_MONTHS for _, te in splits)
+    with pytest.raises(ValueError):
+        model.make_cv(params.CV_MIN_TRAIN_MONTHS + params.CV_TEST_MONTHS)
 
 
 def test_grid_search_summary_is_consistent(table):
@@ -44,7 +54,8 @@ def test_grid_search_summary_is_consistent(table):
     summary = search_summary(model.grid_search(train[params.FEATURES], train["y"],
                                                grid=SMALL_GRID))
     assert summary["best_params"]["model__n_estimators"] in [5, 10]
-    assert summary["cv_rmse_folds"].shape == (params.N_SPLITS,)
+    n_folds = (len(train) - params.CV_MIN_TRAIN_MONTHS) // params.CV_TEST_MONTHS
+    assert summary["cv_rmse_folds"].shape == (n_folds,)
     assert summary["cv_rmse_mean"] == pytest.approx(summary["cv_rmse_folds"].mean())
     assert summary["cv_rmse_std"] == pytest.approx(summary["cv_rmse_folds"].std())
 
@@ -59,13 +70,14 @@ def test_build_model_applies_params():
 
 def test_compute_metrics_by_hand():
     idx = pd.date_range(params.TEST_START, params.TEST_END, freq="MS")
-    errors = np.where(idx.year <= 2021, 1.0, 3.0)  # error 1 en 2020-21, 3 en 2022-23
+    errors = np.where(idx.year <= 2023, 1.0, 3.0)
     preds = pd.DataFrame({"y": 0.0, "m": errors}, index=idx)
     row = compute_metrics(preds, ["m"]).iloc[0]
-    assert row["rmse_2020_2021"] == pytest.approx(1.0)
-    assert row["rmse_2022_2023"] == pytest.approx(3.0)
-    assert row["mae_full"] == pytest.approx(2.0)
-    assert row["rmse_full"] == pytest.approx(np.sqrt(5.0))
+    for period, (start, end) in params.TEST_PERIODS.items():
+        part = errors[(idx >= start) & (idx <= end)]
+        assert row[f"mae_{period}"] == pytest.approx(part.mean())
+        assert row[f"rmse_{period}"] == pytest.approx(np.sqrt((part ** 2).mean()))
+    assert row["mae_full"] == pytest.approx(errors.mean())
 
 
 def test_diebold_mariano_by_hand():
@@ -102,7 +114,7 @@ def test_expanding_trains_only_on_past_months(table):
     assert out["n_train"].iloc[0] == len(train)
     assert (out["n_train"].diff().dropna() == 1).all()
     for _, row in out.iloc[[0, 17, 47]].iterrows():
-        history = table.loc[:row["month"]].iloc[:-1]
+        history = table.loc[params.TRAIN_START:row["month"]].iloc[:-1]
         assert row["train_mean"] == pytest.approx(history["y"].mean())
         assert row["naive_lag1"] == table.loc[row["month"], "y_lag1"]
 
@@ -122,7 +134,8 @@ def test_expanding_forecast_ignores_target_from_t_onwards(table):
 def test_expanding_xgb_retunes_every_january(table, small_grid):
     out = expanding_forecast("xgb", table, retune_every=12)
     retuned = out.loc[out["retuned"], "month"]
-    assert list(retuned.dt.strftime("%Y-%m")) == ["2020-01", "2021-01", "2022-01", "2023-01"]
+    expected = pd.date_range(params.TEST_START, params.TEST_END, freq="12MS")
+    assert list(retuned) == list(expected)
     assert all(set(h) == set(SMALL_GRID) for h in out["hyperparameters"])
 
 

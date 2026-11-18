@@ -2,8 +2,8 @@
 
 Copia la lógica de los notebooks 03_train_macro_models_v1 y 03b_expanding_refit_v1:
 - build_model: Pipeline completo (preprocesador + modelo).
-- cross_validate / grid_search: TimeSeriesSplit solo sobre train.
-- evaluate: evaluación fija (train 1999-2019, test 2020-2023) con baselines.
+- cross_validate / grid_search: TimeSeriesSplit (make_cv) solo sobre train.
+- evaluate: evaluación fija (train 2007-01..2020-12, test 2021-01..2026-10) con baselines.
 - diebold_mariano: pérdida cuadrática, h=1, corrección HLN.
 - expanding_forecast: refit mensual, re-búsqueda de XGBoost cada RETUNE_EVERY meses.
 
@@ -45,10 +45,18 @@ def build_model(model_name: str,
     return pipe
 
 
+def make_cv(n_samples: int) -> TimeSeriesSplit:
+    """Folds de CV_TEST_MONTHS meses; el primer train tiene al menos CV_MIN_TRAIN_MONTHS."""
+    n_splits = (n_samples - params.CV_MIN_TRAIN_MONTHS) // params.CV_TEST_MONTHS
+    if n_splits < 2:
+        raise ValueError(f"{n_samples} rows: need at least "
+                         f"{params.CV_MIN_TRAIN_MONTHS + 2 * params.CV_TEST_MONTHS} for 2 folds")
+    return TimeSeriesSplit(n_splits=n_splits, test_size=params.CV_TEST_MONTHS)
+
+
 def cross_validate(pipe: Pipeline, X: pd.DataFrame, y: pd.Series) -> np.ndarray:
-    """RMSE por fold con TimeSeriesSplit(N_SPLITS). Pasar solo datos de train."""
-    scores = cross_val_score(pipe, X, y,
-                             cv=TimeSeriesSplit(n_splits=params.N_SPLITS),
+    """RMSE por fold con make_cv(len(X)). Pasar solo datos de train."""
+    scores = cross_val_score(pipe, X, y, cv=make_cv(len(X)),
                              scoring=params.SCORING)
     return -scores
 
@@ -58,7 +66,7 @@ def grid_search(X: pd.DataFrame, y: pd.Series,
                 grid: dict = params.XGB_GRID) -> GridSearchCV:
     """GridSearchCV + TimeSeriesSplit para XGBoost (la lineal no tiene hiperparámetros)."""
     search = GridSearchCV(build_model("xgb", feature_columns), grid,
-                          cv=TimeSeriesSplit(n_splits=params.N_SPLITS),
+                          cv=make_cv(len(X)),
                           scoring=params.SCORING)
     search.fit(X, y)
     return search
@@ -73,7 +81,7 @@ def search_summary(search: GridSearchCV) -> dict:
         "cv_rmse_std": search.cv_results_["std_test_score"][best],
         "cv_rmse_folds": np.array(
             [-search.cv_results_[f"split{k}_test_score"][best]
-             for k in range(params.N_SPLITS)]),
+             for k in range(search.n_splits_)]),
     }
 
 
@@ -148,7 +156,8 @@ def expanding_forecast(model_name: str,
 
     - El modelo se re-ajusta cada mes.
     - XGBoost: GridSearchCV + TimeSeriesSplit sobre las filas disponibles cada
-      `retune_every` meses (2020-01, 2021-01, ...). Con retune_every=None usa
+      `retune_every` meses CALENDARIO desde la última re-búsqueda (TEST_START,
+      +12, ...), así un hueco en el test (TARGET_NAN_MONTHS) no corre el calendario. Con retune_every=None usa
       `fixed_params` todo el periodo (reproduce el notebook 03b).
 
     Devuelve una fila por mes: month, actual, prediction, baselines,
@@ -157,20 +166,24 @@ def expanding_forecast(model_name: str,
     if model_name == "xgb" and retune_every is None and fixed_params is None:
         raise ValueError("xgb with retune_every=None needs fixed_params")
 
-    # Mismo split que la evaluación fija (incluye el chequeo de 48 meses de test)
+    # Mismo split que la evaluación fija (incluye el chequeo de N_TEST_MONTHS)
     train, test = split_by_date(table)
     table = pd.concat([train, test])
     test_months = test.index
 
     current_params = fixed_params if model_name == "xgb" else None
+    last_retune = None
     rows = []
-    for i, t in enumerate(test_months):
+    for t in test_months:
         history = table[table.index < t]
         X_hist, y_hist = history[feature_columns], history[params.TARGET]
 
+        months_since = (None if last_retune is None else
+                        (t.year - last_retune.year) * 12 + t.month - last_retune.month)
         retuned = (model_name == "xgb" and retune_every is not None
-                   and i % retune_every == 0)
+                   and (months_since is None or months_since >= retune_every))
         if retuned:
+            last_retune = t
             search = grid_search(X_hist, y_hist, feature_columns)
             current_params = search.best_params_
 
