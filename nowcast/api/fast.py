@@ -195,7 +195,7 @@ def same_sample_baseline(base: str, news_features: tuple[str, ...]):
     """Modelo `base` sin noticias, entrenado con los meses de train de la tabla con noticias."""
     _, base_metadata = get_model(base)
     table = get_table(news_features)
-    train_rows = table.loc[:params.TRAIN_END]
+    train_rows = table.loc[params.TRAIN_START:params.TRAIN_END]
     cols = base_metadata["features"]
     pipe = build_model(base, cols, base_metadata.get("hyperparameters") or None)
     return pipe.fit(train_rows[cols], train_rows[params.TARGET])
@@ -230,7 +230,7 @@ def comparison(model: str = Query(params.PRIMARY_MODEL, description="linear o xg
         return {"rmse": float((error ** 2).mean() ** 0.5), "mae": float(error.abs().mean())}
 
     dm = diebold_mariano(frame, [("with", "without")]).iloc[0]
-    train_rows = table.loc[:params.TRAIN_END]
+    train_rows = table.loc[params.TRAIN_START:params.TRAIN_END]
     return {
         "model": base,
         "train_start": f"{train_rows.index[0]:%Y-%m}", "train_end": f"{train_rows.index[-1]:%Y-%m}",

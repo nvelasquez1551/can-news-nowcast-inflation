@@ -27,7 +27,8 @@ def client(table, monkeypatch, tmp_path):
         train, _ = split_by_date(tables[key])
         pipe = build_model("linear", cols).fit(train[cols], train[params.TARGET])
         fitted[name] = (pipe, {"model_name": name, "trained_at": "2026-01-01T00:00:00",
-                               "train_start": "1999-02", "train_end": "2019-12",
+                               "train_start": f"{pd.Timestamp(params.TRAIN_START):%Y-%m}",
+                               "train_end": f"{pd.Timestamp(params.TRAIN_END):%Y-%m}",
                                "features": cols})
 
     def get_model(model_name):
@@ -57,11 +58,11 @@ def add_news_model():
     (params.MODELS_DIR / "linear_news_20260101-000000-000000.joblib").touch()
 
 
-def test_root_and_months(client):
+def test_root_and_months(client, table):
     root = client.get("/").json()
     assert root["status"] == "ok" and root["uses_news"] is False
     months = client.get("/months").json()
-    assert months["latest"] == "2023-12"
+    assert months["latest"] == f"{table.index[-1]:%Y-%m}"
     assert months["months"][0] > root["first_month"]  # el primer mes no tiene mes anterior
 
 
@@ -76,8 +77,8 @@ def test_nowcast_explains_the_change(client):
         100 * ((1 + body["nowcast"] / 100) ** 12 - 1))
 
 
-def test_nowcast_defaults_to_latest_and_validates_month(client):
-    assert client.get("/nowcast").json()["month"] == "2023-12"
+def test_nowcast_defaults_to_latest_and_validates_month(client, table):
+    assert client.get("/nowcast").json()["month"] == f"{table.index[-1]:%Y-%m}"
     assert client.get("/nowcast", params={"month": "abc"}).status_code == 422
     assert client.get("/nowcast", params={"month": "1990-01"}).status_code == 404
     assert client.get("/nowcast", params={"model": "rf"}).status_code == 404
@@ -86,7 +87,7 @@ def test_nowcast_defaults_to_latest_and_validates_month(client):
 def test_history_matches_table(client, table):
     rows = client.get("/history").json()["rows"]
     assert len(rows) == len(table)
-    assert rows[-1]["month"] == "2023-12" and rows[-1]["in_sample"] is False
+    assert rows[-1]["month"] == f"{table.index[-1]:%Y-%m}" and rows[-1]["in_sample"] is False
     assert rows[0]["in_sample"] is True
 
 
@@ -137,11 +138,13 @@ def test_comparison_needs_both_models_and_uses_test_months(client):
     add_news_model()
     body = client.get("/comparison", params={"model": "linear"}).json()
     assert body["n_months"] == params.N_TEST_MONTHS
-    assert (body["start"], body["end"]) == ("2020-01", "2023-12")
+    assert (body["start"], body["end"]) == (f"{pd.Timestamp(params.TEST_START):%Y-%m}",
+                                            f"{pd.Timestamp(params.TEST_END):%Y-%m}")
     assert body["with"]["rmse"] > 0 and body["without"]["rmse"] > 0
     assert 0 <= body["p_value"] <= 1
     # El modelo sin noticias aprende con los mismos meses que el modelo con noticias
-    assert (body["train_start"], body["train_end"]) == ("1999-02", "2019-12")
+    assert (body["train_start"], body["train_end"]) == (
+        f"{pd.Timestamp(params.TRAIN_START):%Y-%m}", f"{pd.Timestamp(params.TRAIN_END):%Y-%m}")
 
 
 def test_search_headlines_matches_every_word(client):

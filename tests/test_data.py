@@ -28,7 +28,7 @@ def test_split_boundaries_and_sizes(table):
 
 def test_split_fails_if_test_is_incomplete(table):
     with pytest.raises(AssertionError, match="test months"):
-        split_by_date(table.iloc[:-1])
+        split_by_date(table.loc[:params.TEST_END].iloc[:-1])
 
 
 def test_load_raw_data_roundtrip(raw, tmp_path):
@@ -66,9 +66,9 @@ def test_load_news_index_aligns_to_month_start(tmp_path):
 
 def test_load_news_index_rejects_missing_columns(tmp_path):
     path = tmp_path / "news.csv"
-    pd.DataFrame({"month": ["2010-01-01"], "infla_score_mean": [0.1]}).to_csv(
+    pd.DataFrame({"month": ["2010-01-01"], "infla_net_share": [0.1]}).to_csv(
         path, index=False)
-    with pytest.raises(AssertionError, match="infla_net_share"):
+    with pytest.raises(AssertionError, match="infla_score_mean"):
         load_news_index(path)
 
 

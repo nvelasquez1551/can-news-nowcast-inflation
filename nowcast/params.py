@@ -9,6 +9,8 @@ Los valores copian los notebooks 01, 02, 03_train_macro_models_v1 y
 import os
 from pathlib import Path
 
+import pandas as pd
+
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
@@ -30,7 +32,8 @@ MODELS_DIR = Path(os.environ.get("NOWCAST_MODELS_DIR", ROOT / "models"))  # regi
 REGISTRY_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S-%f"
 
 RAW_MACRO_PATH = RAW_DATA_DIR / "macro_monthly_raw.csv"
-NEWS_INDEX_PATH = PROCESSED_DATA_DIR / "news_index_monthly.csv"  # salida del Modelo 1
+# Salida del Modelo 1: FNSPID 2007-2014 (reescalado a Alpaca) + Alpaca 2015-2026
+NEWS_INDEX_PATH = PROCESSED_DATA_DIR / "news_index_union_rescaled.csv"
 
 # Salidas del paquete (nombres nuevos: nunca pisan los archivos v1)
 CV_RESULTS_PATH = PROCESSED_DATA_DIR / "nowcast_cv_results.csv"
@@ -54,7 +57,7 @@ V1_BEST_PARAMS_PATH = PROCESSED_DATA_DIR / "best_params_macro_v1.json"
 # ---------------------------------------------------------------------------
 # Descarga FRED (notebook 01)
 # ---------------------------------------------------------------------------
-FRED_START, FRED_END = "1998-01-01", "2023-12-31"
+FRED_START, FRED_END = "1998-01-01", "2026-11-17"  # FRED_END = fecha de descarga
 FRED_SERIES = {
     "cpi": "CPIAUCSL",
     "cpi_core": "CPILFESL",
@@ -102,6 +105,17 @@ ALL_FEATURES = [
 ]
 DROP_FEATURES = ["oil_last_chg", "gas_last_chg"]
 
+# Hueco de octubre 2025: el BLS no publicó el IPC (cierre del gobierno), así que
+# FRED no tiene CPIAUCSL ni CPILFESL para 2025-10. Solo para construir features
+# (rezagos y medias móviles de 12 meses) se interpola log(x) entre 2025-09 y
+# 2025-11, y solo si el valor falta. La columna CPI_INTERP_FLAG marca esos meses.
+CPI_INTERP_COLS = ["cpi", "cpi_core"]
+CPI_INTERP_MONTHS = ["2025-10-01"]
+CPI_INTERP_FLAG = "cpi_interpolated"
+# Meses cuyo target y depende del valor interpolado (y_t = diff(log cpi)):
+# y = NaN, así no entran en train ni en test.
+TARGET_NAN_MONTHS = ["2025-10-01", "2025-11-01"]
+
 # Mes calendario como feature (v1). Se decide por CV (hasta 2019), nunca por test.
 USE_MONTH = True
 MONTH_COL = "month"
@@ -118,32 +132,39 @@ LEAKAGE_TEST_DATES = ["2005-06-01", "2008-10-01", "2015-01-01",
 # ---------------------------------------------------------------------------
 USE_NEWS = False
 NEWS_DATE_COL = "month"
-NEWS_COLS = ["infla_score_mean", "infla_net_share"]
+NEWS_COLS = ["infla_score_mean"]  # el índice unión solo trae el score medio
 # Los modelos entrenados con noticias se guardan como <modelo>_news (p. ej. linear_news)
 NEWS_MODEL_SUFFIX = "_news"
 
 # ---------------------------------------------------------------------------
 # Split temporal (notebook 02)
 # ---------------------------------------------------------------------------
-TRAIN_START, TRAIN_END = "1999-01-01", "2019-12-31"
-TEST_START, TEST_END = "2020-01-01", "2023-12-31"
-N_TEST_MONTHS = 48
+# Train desde 2007-01: primer mes del índice de noticias, así macro y macro+news
+# usan los mismos meses. TEST_END = último mes con dato de CPIAUCSL.
+TRAIN_START, TRAIN_END = "2007-01-01", "2020-12-31"
+TEST_START, TEST_END = "2021-01-01", "2026-10-31"
+# Meses evaluables del test: todos los del rango menos los de TARGET_NAN_MONTHS
+N_TEST_MONTHS = len(pd.period_range(TEST_START, TEST_END, freq="M")
+                    .difference(pd.PeriodIndex(TARGET_NAN_MONTHS, freq="M")))
 
-# Subperiodos del test (notebook 03 v1)
+# Subperiodos del test. Los de v1 (2020-21, 2022-23) ya no aplican; queda solo el
+# test completo hasta decidir nuevos subperiodos.
 TEST_PERIODS = {
-    "full": ("2020-01-01", "2023-12-31"),
-    "2020_2021": ("2020-01-01", "2021-12-31"),
-    "2022_2023": ("2022-01-01", "2023-12-31"),
+    "full": (TEST_START, TEST_END),
 }
 
-# El test (2020-2023) ya se vio en v0 y v1. Solo se evalúa con RUN_TEST=1.
+# 2021-2022 ya se vio en v0 y v1 (test 2020-2023). Solo se evalúa con RUN_TEST=1.
 RUN_TEST = os.environ.get("RUN_TEST", "0").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Modelos (notebook 03 v1, sin Random Forest)
 # ---------------------------------------------------------------------------
 SEED = 42
-N_SPLITS = 5
+# CV: TimeSeriesSplit con folds de CV_TEST_MONTHS meses y al menos
+# CV_MIN_TRAIN_MONTHS de train en el primer fold. n_splits = (n - mínimo) // test.
+# Con 168 meses de train (2007-2020): 7 folds, el primero entrena con 84 meses.
+CV_MIN_TRAIN_MONTHS = 84
+CV_TEST_MONTHS = 12
 SCORING = "neg_root_mean_squared_error"
 
 MODEL_NAMES = ["linear", "xgb"]
@@ -176,7 +197,7 @@ DM_PAIRS = [
 # Expanding refit (evaluación principal)
 # ---------------------------------------------------------------------------
 # Re-búsqueda de hiperparámetros de XGBoost cada RETUNE_EVERY meses de test
-# (2020-01, 2021-01, 2022-01, 2023-01). None = parámetros fijos (reproduce 03b).
+# (cada enero desde TEST_START). None = parámetros fijos (reproduce 03b).
 RETUNE_EVERY = 12
 
 # ---------------------------------------------------------------------------
