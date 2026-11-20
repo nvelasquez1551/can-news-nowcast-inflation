@@ -169,9 +169,32 @@ def history_chart(history: pd.DataFrame, month: str) -> alt.Chart:
     return (lines + marker).properties(height=280).configure_view(stroke=None)
 
 
+SOURCES = {"fnspid": "FNSPID", "alpaca": "Alpaca/Benzinga"}
+
+
+def source_name(source: str | None) -> str:
+    return SOURCES.get(source, source or "fuente desconocida")
+
+
+def headline_line(item: dict) -> str:
+    return (f"- {item['title']}  \n  <small>{item['date']} · {source_name(item['source'])} · "
+            f"puntaje {num(item['score'], sign=True)}</small>")
+
+
+def headlines_off(response: dict) -> bool:
+    """La API con HEADLINES_ENABLED=0 responde enabled=false y un aviso."""
+    if response.get("enabled", True):
+        return False
+    st.info(f"Los titulares no están disponibles en este despliegue "
+            f"({response.get('message', '')}).")
+    return True
+
+
 def news_section(month: str, result: dict, drivers: pd.DataFrame) -> None:
     st.markdown("### Las noticias del mes")
     news = api_get("/headlines", month=month)
+    if headlines_off(news):
+        return
     if not news["available"]:
         st.caption("Aparecerán aquí cuando esté listo el índice de noticias (Modelo 1).")
         return
@@ -192,13 +215,30 @@ def news_section(month: str, result: dict, drivers: pd.DataFrame) -> None:
                  f"{num(score['value'], sign=True)}, de -1 a +1). "
                  f"Eso movió la estimación {num(effect, sign=True)} puntos.")
 
+    sources = ", ".join(source_name(x) for x in news.get("sources", []))
+    if sources:
+        st.caption(f"Fuente de los titulares de este mes: {sources}. Puntaje de InflaBERT "
+                   "por titular, de -1 (menos inflación) a +1 (más inflación).")
+
     left, right = st.columns(2)
-    for column, key, title in ((left, "up", "Apuntan a más inflación"),
-                               (right, "down", "Apuntan a menos inflación")):
+    for column, key, title in ((left, "up", "Los que más empujaron al alza"),
+                               (right, "down", "Los que más empujaron a la baja")):
         with column:
             st.markdown(f"**{title}**")
             for item in news[key]:
-                st.markdown(f"- {item['title']}")
+                st.markdown(headline_line(item), unsafe_allow_html=True)
+
+    query = st.text_input(f"Buscar en los titulares de {month_name(month)}",
+                          placeholder="oil, Fed, tariffs...", key=f"month_search_{month}").strip()
+    if len(query) >= 2:
+        found = api_get("/headlines/search", q=query, k=10, month=month)
+        if not found["results"]:
+            st.caption(f"Ningún titular de {month_name(month)} contiene «{query}».")
+        else:
+            st.caption(f"{found['n_matches']:,} titulares de {month_name(month)} contienen "
+                       f"«{query}». Los más recientes:".replace(",", "."))
+            for item in found["results"]:
+                st.markdown(headline_line(item), unsafe_allow_html=True)
 
 
 def get_comparison() -> dict | None:
@@ -247,6 +287,8 @@ def headline_search() -> None:
                "precios, con cuántos titulares tiene cada una. Elige una o escribe otras "
                "palabras en inglés.")
     keywords = api_get("/headlines/keywords")
+    if headlines_off(keywords):
+        return
     picked = None
     if keywords["available"]:
         counts = {k["keyword"]: k["n_headlines"] for k in keywords["keywords"]}
@@ -264,7 +306,8 @@ def headline_search() -> None:
     elif not found["results"]:
         st.caption(f"Ningún titular contiene «{query}».")
     else:
-        results = {f"{r['date']} · {r['title']}": r for r in found["results"]}
+        results = {f"{r['date']} · {r['title']} ({source_name(r['source'])})": r
+                   for r in found["results"]}
         st.caption(f"{found['n_matches']:,} titulares contienen «{query}». "
                    "Estos son los más recientes:".replace(",", "."))
         choice = st.radio("Sugerencias", list(results), index=None, label_visibility="collapsed")

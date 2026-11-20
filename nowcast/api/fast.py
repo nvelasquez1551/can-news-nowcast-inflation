@@ -11,6 +11,7 @@ Endpoints:
     GET  /headlines?month=    titulares del mes que más empujan al alza / baja (Modelo 1)
     GET  /headlines/search?q= titulares de la base que contienen esas palabras, con su puntaje
     GET  /headlines/keywords  palabras clave del Modelo 1 y cuántos titulares tiene cada una
+                              (los tres /headlines* se apagan con HEADLINES_ENABLED=0)
     GET  /comparison          error fuera de muestra (test 2021-01..2026-10) de la lineal con y sin noticias
     POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1)
 
@@ -26,6 +27,7 @@ from functools import lru_cache
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import yaml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -301,12 +303,23 @@ def comparison():
     return live_comparison()
 
 
+def headlines_disabled() -> dict | None:
+    """Con HEADLINES_ENABLED=0 los endpoints de titulares responden solo este aviso."""
+    if params.HEADLINES_ENABLED:
+        return None
+    return {"enabled": False, "available": False, "message": params.HEADLINES_DISABLED_MESSAGE}
+
+
 @lru_cache
 def load_scored_news() -> pd.DataFrame | None:
     if not params.NEWS_SCORED_PATH.exists():
         return None
+    columns = ["Date", "Article_title", "infla_score", "infla_role"]
+    available = pq.read_schema(params.NEWS_SCORED_PATH).names
     news = pd.read_parquet(params.NEWS_SCORED_PATH,
-                           columns=["Date", "Article_title", "infla_score", "infla_role"])
+                           columns=columns + (["source"] if "source" in available else []))
+    if "source" not in news:
+        news["source"] = None
     news["month"] = (pd.to_datetime(news["Date"], utc=True)
                      .dt.tz_convert(None).dt.to_period("M").dt.to_timestamp())
     news["title_lower"] = news["Article_title"].astype(str).str.lower()
@@ -315,15 +328,18 @@ def load_scored_news() -> pd.DataFrame | None:
 
 def headline_record(row) -> dict:
     return {"date": f"{pd.Timestamp(row.Date):%Y-%m-%d}", "title": row.Article_title,
-            "score": float(row.infla_score), "role": str(row.infla_role)}
+            "score": float(row.infla_score), "role": str(row.infla_role),
+            "source": row.source}
 
 
 @app.get("/headlines")
 def headlines(month: str = Query(..., description="YYYY-MM"),
               k: int = Query(params.N_TOP_HEADLINES, ge=1, le=20)):
+    if disabled := headlines_disabled():
+        return {"month": month, **disabled, "up": [], "down": []}
     news = load_scored_news()
     if news is None:
-        return {"month": month, "available": False, "up": [], "down": []}
+        return {"month": month, "enabled": True, "available": False, "up": [], "down": []}
     target = parse_month(month, pd.DatetimeIndex(sorted(news["month"].unique())))
     month_news = news.loc[news["month"] == target]
     rows = month_news.sort_values("infla_score")
@@ -334,7 +350,9 @@ def headlines(month: str = Query(..., description="YYYY-MM"),
         return [headline_record(row) for row in frame.itertuples()]
 
     roles = rows["infla_role"].astype(str)
-    return {"month": f"{target:%Y-%m}", "available": True, "n_articles": len(rows),
+    return {"month": f"{target:%Y-%m}", "enabled": True, "available": True,
+            "n_articles": len(rows),
+            "sources": sorted(rows["source"].dropna().unique().tolist()),
             "share_up": float((roles == "up").mean()), "share_down": float((roles == "down").mean()),
             "up": records(unique.tail(k).iloc[::-1]),
             "down": records(unique.drop_duplicates("Article_title").head(k))}
@@ -343,14 +361,21 @@ def headlines(month: str = Query(..., description="YYYY-MM"),
 @app.get("/headlines/search")
 def search_headlines(q: str = Query(..., min_length=2, description="una o varias palabras"),
                      k: int = Query(8, ge=1, le=30),
-                     keyword: bool = Query(False, description="q es una palabra clave exacta")):
+                     keyword: bool = Query(False, description="q es una palabra clave exacta"),
+                     month: str | None = Query(None, description="YYYY-MM: solo ese mes")):
     """Titulares que contienen todas las palabras de `q`, los más recientes primero.
 
     Con keyword=true, `q` se busca como frase completa ("oil" no encuentra "toilet").
+    Con `month`, solo busca en los titulares de ese mes.
     """
+    if disabled := headlines_disabled():
+        return {**disabled, "n_matches": 0, "results": []}
     news = load_scored_news()
     if news is None:
-        return {"available": False, "n_matches": 0, "results": []}
+        return {"enabled": True, "available": False, "n_matches": 0, "results": []}
+    if month is not None:
+        target = parse_month(month, pd.DatetimeIndex(sorted(news["month"].unique())))
+        news = news.loc[news["month"] == target]
     mask = pd.Series(True, index=news.index)
     if keyword:
         mask &= contains_keyword(news["title_lower"], q)
@@ -359,7 +384,8 @@ def search_headlines(q: str = Query(..., min_length=2, description="una o varias
             mask &= news["title_lower"].str.contains(word, regex=False)
     hits = (news.loc[mask].sort_values("Date", ascending=False)
             .drop_duplicates("Article_title").head(k))
-    return {"available": True, "n_matches": int(news.loc[mask, "title_lower"].nunique()),
+    return {"enabled": True, "available": True,
+            "n_matches": int(news.loc[mask, "title_lower"].nunique()),
             "results": [headline_record(row) for row in hits.itertuples()]}
 
 
@@ -383,9 +409,11 @@ def keyword_counts() -> list[dict]:
 @app.get("/headlines/keywords")
 def headline_keywords():
     """Palabras clave del Modelo 1 con el número de titulares distintos que las contienen."""
+    if disabled := headlines_disabled():
+        return {**disabled, "keywords": []}
     if load_scored_news() is None:
-        return {"available": False, "keywords": []}
-    return {"available": True, "keywords": keyword_counts()}
+        return {"enabled": True, "available": False, "keywords": []}
+    return {"enabled": True, "available": True, "keywords": keyword_counts()}
 
 
 class Headline(BaseModel):

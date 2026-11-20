@@ -2,7 +2,7 @@
 PORT ?= 8000
 
 help:
-	@echo "make install | data | train | train_news | run_api | run_frontend | test"
+	@echo "make install | data | headlines | train | train_news | run_api | run_frontend | test"
 
 install:
 	pip install -r requirements.txt
@@ -10,6 +10,9 @@ install:
 
 data:
 	python -c "from nowcast.ml_logic.data import download_fred; download_fred()"
+
+headlines:
+	python -c "from nowcast.ml_logic.data import build_scored_news; build_scored_news()"
 
 train:
 	python -m nowcast.interface.main

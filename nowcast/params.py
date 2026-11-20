@@ -217,8 +217,20 @@ DRIVER_GROUPS = {
     "Estacionalidad": [MONTH_COL],
     "Noticias": NEWS_COLS,
 }
-# Salida del Modelo 1 por artículo, para mostrar los titulares de cada mes
+# Salida del Modelo 1 por artículo, para mostrar los titulares de cada mes.
+# Se arma con `make headlines` (build_scored_news) uniendo los puntajes por titular de
+# cada fuente, con el mismo reparto por mes que NEWS_INDEX_PATH (columna `source`).
+# Queda en data/processed/ (ignorado por git): no se versiona.
 NEWS_SCORED_PATH = PROCESSED_DATA_DIR / "news_scored.parquet"
+NEWS_SCORED_SOURCES = {
+    "fnspid": PROCESSED_DATA_DIR / "news_scored_fnspid.parquet",
+    "alpaca": PROCESSED_DATA_DIR / "news_scored_alpaca.parquet",
+}
+# HEADLINES_ENABLED=0 apaga /headlines* y la sección de titulares de Streamlit
+# (p. ej. en un despliegue en la nube sin news_scored.parquet).
+HEADLINES_ENABLED = os.environ.get("HEADLINES_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+HEADLINES_DISABLED_MESSAGE = "headlines are not available in this deployment"
 # Palabras clave con las que el Modelo 1 eligió las noticias (keywords_broad)
 MODEL1_CONFIG_PATH = ROOT / "config" / "model1.yaml"
 N_TOP_HEADLINES = 5

@@ -87,6 +87,36 @@ def load_news_index(path: Path = params.NEWS_INDEX_PATH) -> pd.DataFrame | None:
     return news
 
 
+def build_scored_news(index_path: Path = params.NEWS_INDEX_PATH,
+                      sources: dict[str, Path] = params.NEWS_SCORED_SOURCES,
+                      out_path: Path = params.NEWS_SCORED_PATH) -> pd.DataFrame:
+    """Une los puntajes por titular de cada fuente en un solo archivo (para /headlines).
+
+    Cada mes toma la fuente que usa el índice (columna `source` de index_path), así los
+    titulares son los mismos que forman el índice. Puntajes raw (sin reescalar).
+    """
+    index = pd.read_csv(index_path, parse_dates=[params.NEWS_DATE_COL])
+    index["month"] = index[params.NEWS_DATE_COL].dt.to_period("M").dt.to_timestamp()
+    parts = []
+    for source, path in sources.items():
+        scored = pd.read_parquet(path)
+        month = (pd.to_datetime(scored["Date"], utc=True)
+                 .dt.tz_convert(None).dt.to_period("M").dt.to_timestamp())
+        keep = month.isin(index.loc[index["source"] == source, "month"])
+        parts.append(scored.loc[keep].assign(source=source))
+    news = pd.concat(parts, ignore_index=True).sort_values("Date", kind="stable")
+
+    # Mismo número de titulares por mes que el índice
+    month = news["Date"].dt.tz_convert(None).dt.to_period("M").dt.to_timestamp()
+    counts = month.value_counts().reindex(index["month"], fill_value=0)
+    expected = index.set_index("month")["news_n_articles"]
+    assert (counts == expected).all(), "scored headlines do not match the news index counts"
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    news.to_parquet(out_path, index=False)
+    return news
+
+
 def split_by_date(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Split temporal sin mezclar: train hasta TRAIN_END, test después (notebook 02, paso 9)."""
     df = df.loc[params.TRAIN_START:params.TEST_END].copy()

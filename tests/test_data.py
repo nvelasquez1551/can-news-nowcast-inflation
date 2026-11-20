@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 
 from nowcast import params
-from nowcast.ml_logic.data import (download_fred, load_news_index, load_raw_data,
-                                   split_by_date)
+from nowcast.ml_logic.data import (build_scored_news, download_fred, load_news_index,
+                                   load_raw_data, split_by_date)
 
 
 def test_split_does_not_overlap(table):
@@ -78,3 +78,30 @@ def test_download_fred_never_overwrites_existing_raw(tmp_path):
     with pytest.raises(FileExistsError):
         download_fred(path)  # falla antes de llamar a la API
     assert path.read_text() == "keep me"
+
+
+def test_build_scored_news_uses_the_index_source_per_month(tmp_path):
+    index = tmp_path / "index.csv"
+    pd.DataFrame({"month": ["2014-12-01", "2015-01-01"], "infla_score_mean": [0.1, 0.2],
+                  "news_n_articles": [1, 2], "source": ["fnspid", "alpaca"]}).to_csv(index)
+
+    def scored(dates):
+        return pd.DataFrame({"Date": pd.to_datetime(dates, utc=True),
+                             "Article_title": [f"t{d}" for d in dates],
+                             "infla_score": [0.5] * len(dates), "infla_role": ["up"] * len(dates)})
+    sources = {"fnspid": tmp_path / "f.parquet", "alpaca": tmp_path / "a.parquet"}
+    # FNSPID también trae 2015-01 y 2006: no deben entrar
+    scored(["2006-03-01", "2014-12-02", "2015-01-05"]).to_parquet(sources["fnspid"])
+    scored(["2014-12-30", "2015-01-03", "2015-01-20"]).to_parquet(sources["alpaca"])
+
+    out = tmp_path / "out.parquet"
+    news = build_scored_news(index, sources, out)
+    assert out.exists() and list(pd.read_parquet(out).columns) == list(news.columns)
+    assert news["source"].tolist() == ["fnspid", "alpaca", "alpaca"]
+    assert news["Date"].dt.strftime("%Y-%m-%d").tolist() == ["2014-12-02", "2015-01-03",
+                                                              "2015-01-20"]
+
+    pd.DataFrame({"month": ["2014-12-01"], "infla_score_mean": [0.1], "news_n_articles": [5],
+                  "source": ["fnspid"]}).to_csv(index)
+    with pytest.raises(AssertionError, match="counts"):
+        build_scored_news(index, sources, out)

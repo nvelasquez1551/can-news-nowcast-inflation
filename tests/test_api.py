@@ -47,6 +47,7 @@ def client(table, monkeypatch, tmp_path):
     monkeypatch.setattr(fast, "get_model", get_model)
     monkeypatch.setattr(fast, "get_table", get_table)
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
+    monkeypatch.setattr(params, "HEADLINES_ENABLED", True)  # no depende del entorno
     caches = (fast.load_scored_news, fast.keyword_counts, fast.live_comparison)
     for cached in caches:
         cached.cache_clear()
@@ -258,3 +259,65 @@ def test_keywords_count_whole_words_and_search_by_keyword(client, tmp_path, monk
                                 {"keyword": "food prices", "n_headlines": 1}]  # sin "wages" (0)
     found = client.get("/headlines/search", params={"q": "oil", "keyword": True}).json()
     assert [r["title"] for r in found["results"]] == ["Oil prices soar"]  # no "Toilet"
+
+
+def write_scored_news_with_sources():
+    pd.DataFrame({
+        "Date": pd.to_datetime(["2014-12-05", "2021-06-02", "2021-06-10", "2021-07-01"], utc=True),
+        "Article_title": ["Oil prices fall", "Oil prices soar", "Food prices ease", "Oil prices up"],
+        "infla_score": [-0.6, 0.9, -0.7, 0.5],
+        "infla_role": ["down", "up", "down", "up"],
+        "source": ["fnspid", "alpaca", "alpaca", "alpaca"],
+    }).to_parquet(params.NEWS_SCORED_PATH)
+    fast.load_scored_news.cache_clear()
+
+
+def test_headlines_carry_source_and_search_by_month(client):
+    write_scored_news_with_sources()
+    body = client.get("/headlines", params={"month": "2014-12"}).json()
+    assert body["sources"] == ["fnspid"] and body["down"][0]["source"] == "fnspid"
+    found = client.get("/headlines/search", params={"q": "oil", "month": "2021-06"}).json()
+    assert [r["title"] for r in found["results"]] == ["Oil prices soar"]
+    assert found["n_matches"] == 1 and found["results"][0]["source"] == "alpaca"
+    assert len(client.get("/headlines/search", params={"q": "oil"}).json()["results"]) == 3
+    assert client.get("/headlines/search", params={"q": "oil", "month": "1990-01"}).status_code == 404
+
+
+def test_headlines_without_source_column_still_work(client):
+    pd.DataFrame({"Date": pd.to_datetime(["2021-06-02"], utc=True), "Article_title": ["x y"],
+                  "infla_score": [0.1], "infla_role": ["neu"]}).to_parquet(params.NEWS_SCORED_PATH)
+    fast.load_scored_news.cache_clear()
+    assert client.get("/headlines", params={"month": "2021-06"}).json()["up"][0]["source"] is None
+
+
+def test_headlines_flag_turns_off_the_three_endpoints(client, monkeypatch):
+    write_scored_news_with_sources()
+    monkeypatch.setattr(params, "HEADLINES_ENABLED", False)
+    responses = [client.get("/headlines", params={"month": "2021-06"}),
+                 client.get("/headlines/search", params={"q": "oil"}),
+                 client.get("/headlines/keywords")]
+    for response in responses:
+        body = response.json()
+        assert response.status_code == 200
+        assert body["enabled"] is False and body["available"] is False
+        assert body["message"] == "headlines are not available in this deployment"
+    assert responses[0].json()["up"] == [] and responses[1].json()["results"] == []
+    assert responses[2].json()["keywords"] == []
+
+    monkeypatch.setattr(params, "HEADLINES_ENABLED", True)
+    assert client.get("/headlines", params={"month": "2021-06"}).json()["enabled"] is True
+
+
+@pytest.mark.parametrize("value, enabled", [(None, True), ("1", True), ("true", True),
+                                            ("0", False), ("false", False), ("OFF", False)])
+def test_headlines_enabled_env_var(monkeypatch, value, enabled):
+    import importlib
+    if value is None:
+        monkeypatch.delenv("HEADLINES_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("HEADLINES_ENABLED", value)
+    try:
+        assert importlib.reload(params).HEADLINES_ENABLED is enabled
+    finally:
+        monkeypatch.delenv("HEADLINES_ENABLED", raising=False)
+        importlib.reload(params)
