@@ -48,6 +48,7 @@ def client(table, monkeypatch, tmp_path):
     monkeypatch.setattr(fast, "get_table", get_table)
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
     monkeypatch.setattr(params, "HEADLINES_ENABLED", True)  # no depende del entorno
+    monkeypatch.setattr(params, "CLASSIFY_ENABLED", True)
     caches = (fast.load_scored_news, fast.keyword_counts, fast.live_comparison)
     for cached in caches:
         cached.cache_clear()
@@ -320,4 +321,61 @@ def test_headlines_enabled_env_var(monkeypatch, value, enabled):
         assert importlib.reload(params).HEADLINES_ENABLED is enabled
     finally:
         monkeypatch.delenv("HEADLINES_ENABLED", raising=False)
+        importlib.reload(params)
+
+
+def test_search_free_text_matches_whole_words(client):
+    pd.DataFrame({
+        "Date": pd.to_datetime(["2021-06-02", "2021-06-10", "2021-06-20"], utc=True),
+        "Article_title": ["Tariffs Spoil the Party", "Oil prices soar", "Boiling oil-market fears"],
+        "infla_score": [0.1, 0.9, 0.4],
+        "infla_role": ["neu", "up", "up"],
+    }).to_parquet(params.NEWS_SCORED_PATH)
+    fast.load_scored_news.cache_clear()
+    titles = [r["title"] for r in client.get("/headlines/search", params={"q": "oil"}).json()["results"]]
+    assert titles == ["Boiling oil-market fears", "Oil prices soar"]  # no "Spoil"
+    assert client.get("/headlines/search", params={"q": "oi"}).json()["n_matches"] == 0
+
+
+def fake_model1(monkeypatch, classify_headline):
+    import sys
+    import types
+    module = types.ModuleType("src.model1.predict")
+    module.classify_headline = classify_headline
+    monkeypatch.setitem(sys.modules, "src.model1.predict", module)
+
+
+def test_classify_flag_and_errors(client, monkeypatch):
+    infla = {"label": "positive", "role": "up", "p_up": 0.9, "p_down": 0.05, "p_neu": 0.05,
+             "score": 0.85}
+    fake_model1(monkeypatch, lambda text: {"text": text, "inflabert": infla})
+    monkeypatch.setattr(params, "CLASSIFY_ENABLED", True)
+    body = client.post("/classify", json={"headline": "Gas prices jump"}).json()
+    assert body["enabled"] is True and body["inflabert"]["role"] == "up"
+
+    def broken(text):
+        raise OSError("cannot download MAPAi/InflaBERT")
+    fake_model1(monkeypatch, broken)
+    response = client.post("/classify", json={"headline": "Gas prices jump"})
+    assert response.status_code == 503 and "could not be loaded" in response.json()["detail"]
+
+    monkeypatch.setattr(params, "CLASSIFY_ENABLED", False)
+    response = client.post("/classify", json={"headline": "Gas prices jump"})
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False,
+                               "message": "headline classification is not available in this deployment"}
+
+
+@pytest.mark.parametrize("value, enabled", [(None, True), ("1", True), ("yes", True),
+                                            ("0", False), ("no", False), ("False", False)])
+def test_classify_enabled_env_var(monkeypatch, value, enabled):
+    import importlib
+    if value is None:
+        monkeypatch.delenv("CLASSIFY_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CLASSIFY_ENABLED", value)
+    try:
+        assert importlib.reload(params).CLASSIFY_ENABLED is enabled
+    finally:
+        monkeypatch.delenv("CLASSIFY_ENABLED", raising=False)
         importlib.reload(params)

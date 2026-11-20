@@ -13,7 +13,8 @@ Endpoints:
     GET  /headlines/keywords  palabras clave del Modelo 1 y cuántos titulares tiene cada una
                               (los tres /headlines* se apagan con HEADLINES_ENABLED=0)
     GET  /comparison          error fuera de muestra (test 2021-01..2026-10) de la lineal con y sin noticias
-    POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1)
+    POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1);
+                              se apaga con CLASSIFY_ENABLED=0
 
 `model` acepta linear y linear_news. Sin `model`, se usa linear_news si está entrenado;
 si falta el modelo con noticias o el índice de noticias de un mes, se usa linear (solo
@@ -363,7 +364,7 @@ def search_headlines(q: str = Query(..., min_length=2, description="una o varias
                      k: int = Query(8, ge=1, le=30),
                      keyword: bool = Query(False, description="q es una palabra clave exacta"),
                      month: str | None = Query(None, description="YYYY-MM: solo ese mes")):
-    """Titulares que contienen todas las palabras de `q`, los más recientes primero.
+    """Titulares que contienen todas las palabras de `q` (completas), los más recientes primero.
 
     Con keyword=true, `q` se busca como frase completa ("oil" no encuentra "toilet").
     Con `month`, solo busca en los titulares de ese mes.
@@ -380,8 +381,9 @@ def search_headlines(q: str = Query(..., min_length=2, description="una o varias
     if keyword:
         mask &= contains_keyword(news["title_lower"], q)
     else:
+        # Palabras completas: "oil" no encuentra "Spoil"
         for word in q.lower().split():
-            mask &= news["title_lower"].str.contains(word, regex=False)
+            mask &= contains_keyword(news["title_lower"], word)
     hits = (news.loc[mask].sort_values("Date", ascending=False)
             .drop_duplicates("Article_title").head(k))
     return {"enabled": True, "available": True,
@@ -422,10 +424,17 @@ class Headline(BaseModel):
 
 @app.post("/classify")
 def classify(body: Headline):
+    """Puntaje raw de FinBERT e InflaBERT para un titular. Apagado con CLASSIFY_ENABLED=0."""
+    if not params.CLASSIFY_ENABLED:
+        return {"enabled": False, "message": params.CLASSIFY_DISABLED_MESSAGE}
     if not body.headline.strip():
         raise HTTPException(422, "headline must not be empty")
     try:
         from src.model1.predict import classify_headline
     except ImportError as exc:
         raise HTTPException(503, f"Model 1 needs torch and transformers: {exc}") from exc
-    return classify_headline(body.headline)
+    try:
+        result = classify_headline(body.headline)
+    except Exception as exc:  # pesos que no se descargan, memoria, etc.
+        raise HTTPException(503, f"Model 1 could not be loaded: {exc}") from exc
+    return {"enabled": True, **result}

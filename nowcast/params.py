@@ -231,6 +231,11 @@ NEWS_SCORED_SOURCES = {
 HEADLINES_ENABLED = os.environ.get("HEADLINES_ENABLED", "1").strip().lower() not in (
     "0", "false", "no", "off")
 HEADLINES_DISABLED_MESSAGE = "headlines are not available in this deployment"
+# CLASSIFY_ENABLED=0 apaga POST /classify y la caja «Prueba un titular» de Streamlit
+# (p. ej. en la nube, donde no caben torch ni los pesos de InflaBERT).
+CLASSIFY_ENABLED = os.environ.get("CLASSIFY_ENABLED", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+CLASSIFY_DISABLED_MESSAGE = "headline classification is not available in this deployment"
 # Palabras clave con las que el Modelo 1 eligió las noticias (keywords_broad)
 MODEL1_CONFIG_PATH = ROOT / "config" / "model1.yaml"
 N_TOP_HEADLINES = 5

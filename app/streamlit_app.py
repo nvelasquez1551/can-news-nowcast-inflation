@@ -315,17 +315,61 @@ def headline_search() -> None:
             item = results[choice]
             show_verdict(item["role"], item["score"], month_name(item["date"][:7]))
 
-    if typed.strip() and st.button(f"Analizar «{query}» como titular nuevo"):
-        with st.spinner("Leyendo el titular..."):
-            response = call("POST", "/classify", json={"headline": query})
-        if response.status_code == 200:
-            infla = response.json()["inflabert"]
-            show_verdict(infla["role"], infla["score"])
-        else:
-            st.caption("Analizar texto nuevo necesita los modelos de lenguaje, que no están "
-                       "instalados aquí. Puedes elegir un titular de las sugerencias.")
     st.caption("InflaBERT acierta más o menos 6 de cada 10 veces, así que algunos "
                "titulares salen mal clasificados.")
+
+
+ROLE_ES = {"up": "más inflación ↑", "down": "menos inflación ↓", "neu": "neutral (nada claro)"}
+
+
+def try_headline() -> None:
+    """Clasifica un titular nuevo con InflaBERT (POST /classify)."""
+    with st.container(border=True):
+        st.markdown("#### Prueba un titular")
+        text = st.text_input("Escribe un titular en inglés", key="try_headline",
+                             placeholder="Gas prices jump as refineries shut down").strip()
+        if not st.button("Clasificar", disabled=not text):
+            st.caption("El modelo leerá el titular y dirá si apunta a más o menos inflación.")
+            return
+        with st.spinner("Cargando el modelo y leyendo el titular (la primera vez tarda)..."):
+            try:
+                response = call("POST", "/classify", json={"headline": text})
+            except requests.RequestException as exc:
+                st.error(f"No se pudo contactar la API: {exc}")
+                return
+        body = response.json() if response.headers.get("content-type", "").startswith(
+            "application/json") else {}
+        if response.status_code == 200 and body.get("enabled") is False:
+            st.info("La clasificación de titulares no está disponible en este despliegue "
+                    f"({body.get('message', '')}).")
+            return
+        if response.status_code != 200:
+            st.error("No se pudo cargar el modelo de lenguaje (InflaBERT), así que no se puede "
+                     f"clasificar el titular. Detalle: {body.get('detail', response.text)}")
+            return
+        infla = body["inflabert"]
+        left, right = st.columns(2)
+        left.metric("InflaBERT dice", ROLE_ES.get(infla["role"], infla["role"]))
+        right.metric("Puntaje", num(infla["score"], 3, sign=True))
+        st.caption(f"Probabilidades: más {infla['p_up']:.0%} · menos {infla['p_down']:.0%} · "
+                   f"neutral {infla['p_neu']:.0%}.")
+        st.caption("Ojo: el puntaje es la salida raw del modelo (de -1 a +1, sin reescalar ni "
+                   "promediar), y InflaBERT se entrenó con otro tipo de noticias, así que "
+                   "en estos titulares puede equivocarse.")
+
+
+def how_to_use(status: dict) -> None:
+    with st.container(border=True):
+        st.markdown("#### Cómo usar")
+        st.markdown(
+            "**Eliges** un mes.  \n"
+            "**Recibes**: la estimación (nowcast) de la inflación mensual del IPC de ese mes, "
+            "en %; el dato oficial, cuando existe; los factores que movieron la estimación; "
+            "y la comparación del modelo con y sin noticias.  \n"
+            "**Lo que no hace**: no pronostica el futuro, solo estima meses que ya "
+            f"terminaron. Y el modelo guardado se entrenó con los meses de "
+            f"{status['train_start']} a {status['train_end']} (incluido), así que esos meses "
+            "ya los conocía: su estimación no es fuera de muestra.")
 
 
 st.markdown('<div class="eyebrow">NOWCAST DE INFLACIÓN · EE. UU.</div>', unsafe_allow_html=True)
@@ -335,6 +379,7 @@ st.markdown('<p class="lead">El dato oficial de inflación sale unas dos semanas
             'la inflación de meses anteriores y las noticias.</p>', unsafe_allow_html=True)
 
 try:
+    how_to_use(api_get("/"))
     catalog = api_get("/models")
     options = {m["name"]: f"{m['label']} · {'con' if m['uses_news'] else 'sin'} noticias"
                for m in catalog["models"]}
@@ -401,6 +446,7 @@ try:
     news_section(month, result, drivers)
 
     headline_search()
+    try_headline()
 except requests.ConnectionError:
     st.error(f"No hay conexión con la API ({API_URL}). Arráncala con `make run_api`.")
 except RuntimeError as exc:
