@@ -315,8 +315,14 @@ def headline_search() -> None:
             item = results[choice]
             show_verdict(item["role"], item["score"], month_name(item["date"][:7]))
 
-    st.caption("InflaBERT acierta más o menos 6 de cada 10 veces, así que algunos "
-               "titulares salen mal clasificados.")
+    st.caption("Revisión manual de 50 titulares del índice elegidos al azar, con un solo "
+               "etiquetador y una regla escrita antes de etiquetar: InflaBERT acierta el 32 % "
+               "(IC 95 % 21-46 %), mientras que decir siempre «neutral» acierta el 42 %; kappa "
+               "0,02. En los 29 titulares con dirección de precios coincide en la dirección el "
+               "55 % (IC 95 % 38-72 %). El 42 % de los titulares (21 de 50) no tenía dirección "
+               "de precios, y el modelo casi nunca predice «neutral». Con 50 titulares y un solo"
+               " etiquetador los intervalos son amplios; el resultado no demuestra que el modelo"
+               " sea peor que el azar, solo que no se observa un acuerdo claro.")
 
 
 ROLE_ES = {"up": "más inflación ↑", "down": "menos inflación ↓", "neu": "neutral (nada claro)"}

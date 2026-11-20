@@ -102,7 +102,7 @@ make run_frontend  # terminal 2: la app, en http://localhost:8501
 
 ## 8. Límites que conviene contar
 
-- **InflaBERT acierta unas 6 de cada 10 veces.** Algunos titulares salen mal clasificados; por ejemplo, "Gasoline Prices Take a Dive" sale como "más inflación".
+- **Revisión manual de InflaBERT.** Revisión manual de 50 titulares del índice elegidos al azar, con un solo etiquetador y una regla escrita antes de etiquetar: InflaBERT acierta el 32 % (IC 95 % 21-46 %), mientras que decir siempre «neutral» acierta el 42 %; kappa 0,02. En los 29 titulares con dirección de precios coincide en la dirección el 55 % (IC 95 % 38-72 %). El 42 % de los titulares (21 de 50) no tenía dirección de precios, y el modelo casi nunca predice «neutral». Con 50 titulares y un solo etiquetador los intervalos son amplios; el resultado no demuestra que el modelo sea peor que el azar, solo que no se observa un acuerdo claro. Algunos titulares salen mal clasificados; por ejemplo, "Gasoline Prices Take a Dive" sale como "más inflación".
 - **FNSPID trata sobre empresas, no sobre economía.** Muchas noticias de "petróleo" son de empresas petroleras.
 - **Los años 2021–2023 se habían mirado antes** (el test anterior era 2020–2023), así que solo 2024–2026 es una prueba realmente "fresca".
 - **El COVID** (primavera de 2020) concentra buena parte del error de todos los modelos.
