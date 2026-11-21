@@ -1,0 +1,8 @@
+# Streamlit Cloud: lo que app/streamlit_app.py importa en modo API (API_URL definida).
+# Mismas versiones que el entorno local. Sin torch, sklearn ni el paquete nowcast:
+# los modelos corren en la API.
+streamlit==1.65.0
+altair==6.2.2
+pandas==2.3.3
+numpy==2.2.6
+requests==2.34.2

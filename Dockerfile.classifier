@@ -1,0 +1,77 @@
+# Imagen de la API del nowcast CON el clasificador de titulares (POST /classify).
+#
+#   docker build -f Dockerfile.classifier -t nowcast-api-clf .
+#   docker run --rm -p 8080:8080 nowcast-api-clf
+#
+# Igual que Dockerfile, más torch (CPU) y transformers y los pesos de InflaBERT
+# (MAPAi/InflaBERT, revisión fijada en config/model1.yaml) descargados al construir.
+# En ejecución HF_HUB_OFFLINE=1: no se descarga nada. Sigue sin titulares
+# (HEADLINES_ENABLED=0). FinBERT queda apagado dentro de la imagen (ver abajo).
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HEADLINES_ENABLED=0 \
+    CLASSIFY_ENABLED=1 \
+    HF_HOME=/app/hf \
+    PORT=8080
+
+WORKDIR /app
+
+# Mismas versiones que Dockerfile (API) ...
+RUN pip install \
+        fastapi==0.162.5 uvicorn==0.54.0 pydantic==2.14.3 \
+        numpy==2.2.6 pandas==2.3.3 scipy==1.15.3 scikit-learn==1.7.2 joblib==1.6.0 \
+        xgboost-cpu==3.2.0 pyarrow==25.0.1 pyyaml==6.0.3 \
+        fredapi==0.5.2 python-dotenv==1.2.4
+
+# ... y las del entorno local para el Modelo 1 (torch solo CPU, sin CUDA)
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.1 \
+    && pip install transformers==5.20.2 tokenizers==0.23.3 safetensors==0.8.0 \
+        huggingface_hub==2.4.0
+
+# Pesos de InflaBERT en la revisión fijada del proyecto (config/model1.yaml)
+ARG INFLABERT_REPO=MAPAi/InflaBERT
+ARG INFLABERT_REVISION=2dd3019d1a9e1cb8e7d0d297352f9bcea208d9de
+RUN python -c "from huggingface_hub import snapshot_download; \
+snapshot_download('${INFLABERT_REPO}', revision='${INFLABERT_REVISION}', \
+allow_patterns=['*.json', '*.txt', '*.safetensors'])"
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+# Código: la API y solo los módulos del Modelo 1 que usa /classify
+COPY nowcast/ nowcast/
+COPY src/__init__.py src/
+COPY src/model1/__init__.py src/model1/config.py src/model1/filter.py \
+     src/model1/labels.py src/model1/load.py src/model1/predict.py \
+     src/model1/score.py \
+     src/model1/
+# Config del Modelo 1. Dentro de la imagen FinBERT queda apagado
+# (models.finbert.enabled=false): /classify solo carga InflaBERT, que es lo único
+# que muestra Streamlit, y no hace falta descargar FinBERT.
+COPY config/model1.yaml config/
+RUN sed -i 's/^    enabled: true$/    enabled: false/' config/model1.yaml \
+    && grep -q '^    enabled: false$' config/model1.yaml
+
+# Modelos finales (entrenados con 2007-01..2026-10). Al reentrenar, cambiar los
+# nombres aquí y en Dockerfile.classifier.dockerignore.
+COPY models/linear_20261117-195644-556120.joblib \
+     models/linear_20261117-195644-556120.json \
+     models/linear_news_20261117-195644-580389.joblib \
+     models/linear_news_20261117-195644-580389.json \
+     models/
+
+# Datos: macro de FRED e índice mensual de noticias (sin texto de titulares)
+COPY data/raw/macro_monthly_raw.csv data/raw/
+COPY data/processed/news_index_union_rescaled.csv data/processed/
+
+# Control: ningún parquet (titulares), xgb ni .env dentro de la imagen
+RUN test -z "$(find /app -name '*.parquet' -o -name 'xgb*' -o -name '.env')" \
+    && useradd --create-home --uid 1000 app \
+    && chown -R app /app/hf
+USER app
+
+EXPOSE 8080
+CMD ["sh", "-c", "exec uvicorn nowcast.api.fast:app --host 0.0.0.0 --port ${PORT:-8080}"]

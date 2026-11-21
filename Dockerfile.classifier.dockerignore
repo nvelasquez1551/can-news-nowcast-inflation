@@ -1,0 +1,29 @@
+# Lista blanca para Dockerfile.classifier: se excluye todo y solo entra lo que la
+# API con /classify necesita. Los pesos de InflaBERT se descargan dentro del build.
+*
+
+!Dockerfile.classifier
+!nowcast/
+nowcast/**/__pycache__
+nowcast/**/*.pyc
+
+# Modelo 1: solo los módulos que importa /classify y su config
+!src/__init__.py
+!src/model1/__init__.py
+!src/model1/config.py
+!src/model1/filter.py
+!src/model1/labels.py
+!src/model1/load.py
+!src/model1/predict.py
+!src/model1/score.py
+!config/model1.yaml
+
+# Modelos finales (los más nuevos de linear y linear_news). Cambiar al reentrenar.
+!models/linear_20261117-195644-556120.joblib
+!models/linear_20261117-195644-556120.json
+!models/linear_news_20261117-195644-580389.joblib
+!models/linear_news_20261117-195644-580389.json
+
+# Datos que leen /nowcast, /history, /months y /comparison
+!data/raw/macro_monthly_raw.csv
+!data/processed/news_index_union_rescaled.csv

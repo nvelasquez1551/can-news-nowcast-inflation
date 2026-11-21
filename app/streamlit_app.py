@@ -1,33 +1,34 @@
 """Frontend del nowcast. Solo llama a la API (nowcast/api/fast.py) y muestra los resultados.
 
-    API_URL=http://localhost:8000 streamlit run app/streamlit_app.py   # con la API aparte
-    streamlit run app/streamlit_app.py                                 # API dentro de la app
+    API_URL=http://localhost:8000 streamlit run app/streamlit_app.py
 
-Sin API_URL (como en Streamlit Cloud) la API corre dentro de la app con los datos de
-demo_data/, y los modelos se entrenan al arrancar.
+La dirección de la API sale de la variable de entorno API_URL o, si no está, de
+st.secrets["API_URL"] (Streamlit Cloud: Settings > Secrets). Sin ninguna de las dos,
+la app muestra un aviso y se detiene.
 """
 
 from __future__ import annotations
 
 import os
-import sys
-import tempfile
-from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-API_URL = os.environ.get("API_URL", "").rstrip("/")
-EMBEDDED = not API_URL
-if EMBEDDED:
-    # Antes de importar nowcast: params lee estas rutas al importarse
-    os.environ.setdefault("NOWCAST_DATA_DIR", str(REPO_ROOT / "demo_data"))
-    os.environ.setdefault("NOWCAST_MODELS_DIR", str(Path(tempfile.gettempdir()) / "nowcast_models"))
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
+
+def read_api_url() -> str:
+    """API_URL del entorno; si no está, la de st.secrets. Vacía si no hay ninguna."""
+    url = os.environ.get("API_URL", "").strip()
+    if not url:
+        try:
+            url = str(st.secrets.get("API_URL", "")).strip()
+        except Exception:  # sin secrets.toml, Streamlit lanza un error al leer st.secrets
+            url = ""
+    return url.rstrip("/")
+
+
+API_URL = read_api_url()
 
 NAVY, AMBER, GREY = "#14273d", "#d9962b", "#8a94a3"
 MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
@@ -81,24 +82,7 @@ def month_name(month: str) -> str:
     return f"{MONTHS[stamp.month - 1]} {stamp.year}"
 
 
-@st.cache_resource(show_spinner="Preparando los modelos (solo la primera vez, ~1 minuto)...")
-def embedded_client():
-    from fastapi.testclient import TestClient
-
-    from nowcast import params
-    from nowcast.api.fast import app, available_models
-    from nowcast.interface.main import train
-
-    if params.PRIMARY_MODEL not in available_models():
-        train()
-    if f"{params.PRIMARY_MODEL}{params.NEWS_MODEL_SUFFIX}" not in available_models():
-        train(use_news=True)
-    return TestClient(app)
-
-
 def call(method: str, path: str, **kwargs):
-    if EMBEDDED:
-        return embedded_client().request(method, path, **kwargs)
     return requests.request(method, f"{API_URL}{path}", timeout=300, **kwargs)
 
 
@@ -383,6 +367,12 @@ st.title("¿Cuánto subieron los precios este mes?")
 st.markdown('<p class="lead">El dato oficial de inflación sale unas dos semanas después de '
             'terminar el mes. Este modelo lo estima antes, con el petróleo, la gasolina, '
             'la inflación de meses anteriores y las noticias.</p>', unsafe_allow_html=True)
+
+if not API_URL:
+    st.error("Falta la dirección de la API. Define la variable de entorno `API_URL` o "
+             "añade `API_URL = \"https://...\"` en los secrets de Streamlit "
+             "(`.streamlit/secrets.toml` o Settings > Secrets en Streamlit Cloud).")
+    st.stop()
 
 try:
     how_to_use(api_get("/"))
