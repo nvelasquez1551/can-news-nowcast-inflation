@@ -1,0 +1,20 @@
+# Lista blanca: se excluye todo y solo entra lo que la API necesita.
+# Fuera quedan: .env, data/raw y data/interim (salvo el CSV macro), todos los
+# news_scored*.parquet (también demo_data/), notebooks/, tests/, reports/, src/,
+# config/ y los modelos xgb y viejos.
+*
+
+!Dockerfile
+!nowcast/
+nowcast/**/__pycache__
+nowcast/**/*.pyc
+
+# Modelos finales (los más nuevos de linear y linear_news). Cambiar al reentrenar.
+!models/linear_20261117-195644-556120.joblib
+!models/linear_20261117-195644-556120.json
+!models/linear_news_20261117-195644-580389.joblib
+!models/linear_news_20261117-195644-580389.json
+
+# Datos que leen /nowcast, /history, /months y /comparison
+!data/raw/macro_monthly_raw.csv
+!data/processed/news_index_union_rescaled.csv
