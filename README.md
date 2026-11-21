@@ -111,19 +111,89 @@ What the frontend shows:
 
 When the news model exists, the app uses `linear_news` by default and the bars include a **Noticias** driver; the macro-only `linear` can be picked under *Ajustes*. If the news model or the news index for a month is missing, the API falls back to `linear` and says so (`fallback`).
 
-API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|linear_news`, `/comparison`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...&month=YYYY-MM`, `/headlines/keywords`, `POST /classify`. The frontend reads the API address from `API_URL` (`make run_frontend` sets it to `http://localhost:8000`), which is what changes when the API moves to the cloud.
+API endpoints: `GET /`, `/models`, `/months`, `/history`, `/nowcast?month=YYYY-MM&model=linear|linear_news`, `/comparison`, `/headlines?month=YYYY-MM`, `/headlines/search?q=...&month=YYYY-MM`, `/headlines/keywords`, `POST /classify`. The frontend reads the API address from the `API_URL` environment variable or, if it is not set, from the Streamlit secret `API_URL` (`make run_frontend` sets it to `http://localhost:8000`). That address is what changes when the API moves to the cloud.
 
-### Without a separate API (Streamlit Cloud)
+### Frontend against a remote API (Streamlit Cloud)
 
-> Not supported with the current configuration: see «Limitaciones conocidas» below.
+The app always needs an API: it reads `API_URL` from the environment or from Streamlit secrets, and if neither is set it shows an error and stops. There is no embedded mode (the old one that trained on `demo_data/` was removed). With `API_URL` set, the app only imports `streamlit`, `altair`, `pandas` and `requests`; [`app/requirements.txt`](app/requirements.txt) pins those plus `numpy` (no PyTorch, no scikit-learn).
 
-When `API_URL` is not set, the frontend runs the API inside the Streamlit process with the data committed in `demo_data/` (FRED macro table, Model 1 monthly index, and a slim copy of the scored headlines) and trains the models on the first load, which takes about a minute. That is how the app runs on Streamlit Community Cloud:
+On Streamlit Community Cloud: repository `nvelasquez1551/can-news-nowcast-inflation`, branch `main`, main file `app/streamlit_app.py`, and in the app's secrets:
 
-1. share.streamlit.io > **Create app** > deploy from GitHub.
-2. Repository `nvelasquez1551/can-news-nowcast-inflation`, branch `main`, main file `app/streamlit_app.py`.
-3. Deploy. Do not set `API_URL`.
+```toml
+API_URL = "https://nowcast-api-551929414015.us-central1.run.app"
+```
 
-PyTorch is not installed there, so new text cannot be classified; headline search still works. Refresh `demo_data/` after a new Model 1 or FRED run.
+Locally, the same secret can go in `.streamlit/secrets.toml` (ignored by git). See «Despliegue en la nube» below.
+
+## Despliegue en la nube
+
+### Arquitectura
+
+```
+Streamlit Cloud (app/streamlit_app.py)  ──HTTP, API_URL──>  Google Cloud Run (nowcast-api)
+                                                               imagen en Artifact Registry
+```
+
+- **API:** un contenedor en **Google Cloud Run**. La imagen se construye con [`Dockerfile`](Dockerfile) (API ligera, sin clasificador) o con [`Dockerfile.classifier`](Dockerfile.classifier) (la misma API más PyTorch CPU, transformers y los pesos de InflaBERT en la revisión fijada, para `POST /classify`). La imagen se guarda en **Artifact Registry**.
+- **App:** **Streamlit Cloud** ejecuta `app/streamlit_app.py`, que llama a la API mediante `API_URL` (secret de Streamlit).
+
+### URLs de la demo pública
+
+Son **temporales** y pueden dejar de funcionar:
+
+- API: https://nowcast-api-551929414015.us-central1.run.app
+- App: https://can-news-nowcast-inflation-mizduqnxjvzpp8cfet5nyb.streamlit.app/
+
+### Qué NO está en la nube
+
+- **Titulares:** la imagen corre con `HEADLINES_ENABLED=0`, porque la licencia para redistribuir el texto de los titulares está pendiente (ver «Datos y licencias»). `/headlines*` responden `enabled: false` y la app muestra un aviso.
+- La imagen **no lleva** archivos `.parquet`, datos crudos (solo `data/raw/macro_monthly_raw.csv` y `data/processed/news_index_union_rescaled.csv`), `.env` ni modelos XGBoost. El build falla si encuentra un `.parquet`, un `xgb*` o un `.env` dentro de `/app`.
+- El **clasificador sí está activo** (`CLASSIFY_ENABLED=1`, imagen de `Dockerfile.classifier`). Dentro de esa imagen FinBERT está apagado: `POST /classify` solo devuelve InflaBERT, que es lo que muestra la app, y no se descarga nada en ejecución.
+
+### Comandos usados (en orden)
+
+Con `GCP_PROJECT` y `GCP_REGION` definidas en la terminal:
+
+```bash
+gcloud auth configure-docker $GCP_REGION-docker.pkg.dev
+gcloud artifacts repositories create nowcast --repository-format=docker \
+  --location=$GCP_REGION --description="Nowcast API images"
+
+docker build -f Dockerfile.classifier --platform linux/amd64 \
+  -t $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/nowcast/nowcast-api:prod-clf .
+docker push $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/nowcast/nowcast-api:prod-clf
+
+gcloud run deploy nowcast-api \
+  --image $GCP_REGION-docker.pkg.dev/$GCP_PROJECT/nowcast/nowcast-api:prod-clf \
+  --region $GCP_REGION --memory 2Gi --cpu 1 --cpu-boost --timeout 300 \
+  --max-instances 1 --allow-unauthenticated
+```
+
+La API ligera se desplegó antes igual, con `docker build --platform linux/amd64 -t .../nowcast-api:prod .` (sin `-f`) y `--memory 1Gi`.
+
+### Cómo actualizar después de reentrenar
+
+Los modelos van **dentro de la imagen**. Después de reentrenar (ver «Cómo se actualiza el modelo cada mes»):
+
+1. Cambiar los nombres de los archivos de `models/` en `Dockerfile` y `.dockerignore` (o en `Dockerfile.classifier` y `Dockerfile.classifier.dockerignore`).
+2. Volver a construir la imagen (`docker build ...`), subirla (`docker push ...`) y volver a desplegar (`gcloud run deploy ...`), con los mismos comandos de arriba.
+
+El reentrenamiento en la nube **no está implementado** todavía.
+
+### Límites conocidos
+
+- **Arranque en frío:** tras un rato sin tráfico, Cloud Run apaga la instancia y la primera petición tarda más. La primera llamada a `/classify` además carga InflaBERT.
+- **Streamlit Cloud gratuito:** las apps se duermen tras un tiempo sin visitas y hay que despertarlas.
+- **Una sola instancia** como máximo (`--max-instances 1`).
+
+### Cómo borrar todo
+
+```bash
+gcloud run services delete nowcast-api --region $GCP_REGION
+gcloud artifacts repositories delete nowcast --location=$GCP_REGION   # las imágenes guardadas
+```
+
+O borrar el proyecto de GCP completo (`gcloud projects delete $GCP_PROJECT`). La app de Streamlit Cloud se borra desde su panel.
 
 ## Qué elige el usuario y qué recibe
 
@@ -163,7 +233,7 @@ El índice de noticias no mejoró el error de forma medible: en la lineal el RMS
 - **IPC de octubre de 2025.** El BLS no lo publicó (cierre del gobierno). Se interpola solo para construir features (rezagos y medias móviles); el target de 2025-10 y 2025-11 queda vacío, y no hay nowcast para 2025-10, 2025-11 ni 2025-12 (2025-12 no tiene mes anterior con dato para explicar el cambio).
 - **Cambio de fuente en 2015.** Las noticias vienen de FNSPID hasta 2014-12 y de Alpaca desde 2015-01. La regla de compatibilidad fijada de antemano (correlación ≥ 0.7 en el solape 2015-2016) **falló** (r = 0.448), lo que indicaba usar solo Alpaca; aun así se eligió, por decisión explícita, la unión con FNSPID reescalado a la media y el desvío de Alpaca (`news_index_union_rescaled.csv`). El índice puede tener un quiebre en 2015.
 - **Dominio de InflaBERT.** InflaBERT se entrenó con otro tipo de noticias; sus puntajes en estos titulares son ruidosos y se usan sin reentrenar. Revisión manual de 50 titulares del índice elegidos al azar, con un solo etiquetador y una regla escrita antes de etiquetar: InflaBERT acierta el 32 % (IC 95 % 21-46 %), mientras que decir siempre «neutral» acierta el 42 %; kappa 0,02. En los 29 titulares con dirección de precios coincide en la dirección el 55 % (IC 95 % 38-72 %). El 42 % de los titulares (21 de 50) no tenía dirección de precios, y el modelo casi nunca predice «neutral». Con 50 titulares y un solo etiquetador los intervalos son amplios; el resultado no demuestra que el modelo sea peor que el azar, solo que no se observa un acuerdo claro.
-- **Modo embebido (`demo_data/`) no soportado.** Sin `API_URL`, la app intenta entrenar con `demo_data/`, que llega a 2023-12 y trae el índice antiguo `news_index_monthly.csv`; con la configuración actual eso falla. La sección *Without a separate API* de arriba describe ese modo, que hoy no funciona.
+- **La app necesita la API.** Sin `API_URL` (variable de entorno o secret de Streamlit), la app muestra un aviso y se detiene; ya no hay modo embebido.
 - **Dos etiquetas fuera de la regla.** Dos titulares sobre subidas de tasas se etiquetaron «down» con una interpretación distinta de la regla escrita, y no se corrigieron después de ver los resultados.
 - **Sin actualización automática.** Ver «Cómo se actualiza el modelo cada mes».
 
