@@ -13,6 +13,8 @@ Endpoints:
     GET  /headlines/keywords  palabras clave del Modelo 1 y cuántos titulares tiene cada una
                               (los tres /headlines* se apagan con HEADLINES_ENABLED=0)
     GET  /comparison          error fuera de muestra (test 2021-01..2026-10) de la lineal con y sin noticias
+    GET  /news-stats?month=   cifras agregadas del índice de noticias del mes (sin titulares;
+                              funciona con HEADLINES_ENABLED=0)
     POST /classify            clasifica un titular con FinBERT e InflaBERT (Modelo 1);
                               se apaga con CLASSIFY_ENABLED=0
 
@@ -302,6 +304,65 @@ def live_comparison() -> dict:
 def comparison():
     """Error fuera de muestra de la regresión lineal con y sin noticias (ver live_comparison)."""
     return live_comparison()
+
+
+NEWS_STATS_COLS = ["infla_score_mean", "news_n_articles", "source", "below_min_flag"]
+
+
+@lru_cache
+def load_news_stats() -> pd.DataFrame | None:
+    """Índice mensual de noticias (CSV agregado, sin texto). None si no existe."""
+    if not params.NEWS_INDEX_PATH.exists():
+        return None
+    stats = pd.read_csv(params.NEWS_INDEX_PATH, parse_dates=[params.NEWS_DATE_COL])
+    missing = set(NEWS_STATS_COLS) - set(stats.columns)
+    assert not missing, f"columns missing from news index: {missing}"
+    stats.index = stats.pop(params.NEWS_DATE_COL).dt.to_period("M").dt.to_timestamp()
+    return stats[NEWS_STATS_COLS].sort_index()
+
+
+def month_stats(stats: pd.DataFrame, month: pd.Timestamp) -> dict:
+    row = stats.loc[month]
+    return {"month": f"{month:%Y-%m}", "n_articles": int(row["news_n_articles"]),
+            "source": str(row["source"]), "below_min": bool(row["below_min_flag"]),
+            "infla_score_mean": float(row["infla_score_mean"])}
+
+
+@app.get("/news-stats")
+def news_stats(month: str = Query(..., description="YYYY-MM")):
+    """Cifras agregadas del índice de noticias para un mes (sin titulares ni parquet).
+
+    Solo lo que trae el CSV del índice: número de artículos, fuente, aviso de pocos
+    artículos y puntaje medio de InflaBERT, más el mes anterior y la serie de artículos
+    por mes. Funciona con HEADLINES_ENABLED=0.
+    """
+    target = to_month(month)
+    stats = load_news_stats()
+    if stats is None:
+        return {"month": f"{target:%Y-%m}", "available": False,
+                "message": "the news index is not available in this deployment"}
+    first, last = stats.index[0], stats.index[-1]
+    series = [{"month": f"{m:%Y-%m}", "n_articles": int(n), "source": str(s)}
+              for m, n, s in zip(stats.index, stats["news_n_articles"], stats["source"])]
+    base = {"month": f"{target:%Y-%m}", "first_month": f"{first:%Y-%m}",
+            "last_month": f"{last:%Y-%m}", "series": series}
+    if target not in stats.index:
+        if target < first:
+            reason = f"the news index starts in {first:%Y-%m}"
+        elif target > last:
+            reason = f"the news index ends in {last:%Y-%m}"
+        else:
+            reason = "no news index for this month"
+        return {**base, "available": False, "message": reason}
+
+    current = month_stats(stats, target)
+    previous_month = target - pd.offsets.MonthBegin(1)
+    previous = month_stats(stats, previous_month) if previous_month in stats.index else None
+    change = (current["infla_score_mean"] - previous["infla_score_mean"]
+              if previous is not None else None)
+    return {**base, "available": True, **current, "previous": previous,
+            "score_change": change,
+            "source_changed": previous is not None and previous["source"] != current["source"]}
 
 
 def headlines_disabled() -> dict | None:

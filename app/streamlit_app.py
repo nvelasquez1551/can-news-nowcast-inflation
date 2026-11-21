@@ -225,6 +225,63 @@ def news_section(month: str, result: dict, drivers: pd.DataFrame) -> None:
                 st.markdown(headline_line(item), unsafe_allow_html=True)
 
 
+def articles_chart(series: list[dict], month: str) -> alt.Chart:
+    data = pd.DataFrame(series)
+    data["month"] = pd.to_datetime(data["month"])
+    data["fuente"] = data["source"].map(source_name)
+    data["elegido"] = data["month"] == pd.Timestamp(month)
+    bars = alt.Chart(data).mark_bar().encode(
+        x=alt.X("month:T", title=None, axis=alt.Axis(format="%Y", grid=False)),
+        y=alt.Y("n_articles:Q", title="Artículos"),
+        color=alt.condition("datum.elegido", alt.value(AMBER), alt.value(GREY)),
+        tooltip=[alt.Tooltip("month:T", format="%m/%Y", title="Mes"),
+                 alt.Tooltip("n_articles:Q", format=",", title="Artículos"),
+                 alt.Tooltip("fuente:N", title="Fuente")],
+    )
+    return bars.properties(height=160).configure_view(stroke=None)
+
+
+def news_stats_section(month: str) -> None:
+    """Cifras agregadas del índice de noticias (GET /news-stats): sin texto de titulares."""
+    st.markdown("### Estadísticas de las noticias del mes")
+    stats = api_get("/news-stats", month=month)
+    if not stats["available"]:
+        reason = "el índice de noticias no está disponible en este despliegue"
+        if "first_month" in stats:
+            reason = "no hay noticias en el índice para ese mes"
+            if not stats["first_month"] <= month[:7] <= stats["last_month"]:
+                reason = (f"el índice de noticias va de {month_name(stats['first_month'])} a "
+                          f"{month_name(stats['last_month'])}")
+        st.info(f"No hay estadísticas de noticias para {month_name(month)} ({reason}).")
+        return
+    previous = stats["previous"]
+    left, middle, right = st.columns(3)
+    left.metric("Artículos sobre precios", f"{stats['n_articles']:,}".replace(",", "."),
+                delta=(f"{stats['n_articles'] - previous['n_articles']:+,}".replace(",", ".")
+                       if previous else None), delta_color="off")
+    middle.metric("Fuente", source_name(stats["source"]))
+    right.metric("Puntaje medio (InflaBERT)", num(stats["infla_score_mean"], 3, sign=True),
+                 delta=(num(stats["score_change"], 3, sign=True) if previous else None),
+                 delta_color="off")
+    if previous:
+        n_previous = f"{previous['n_articles']:,}".replace(",", ".")
+        st.caption(f"Comparado con {month_name(previous['month'])}: {n_previous} artículos, "
+                   f"puntaje medio {num(previous['infla_score_mean'], 3, sign=True)}. "
+                   "El puntaje va de -1 (menos inflación) a +1 (más inflación).")
+    else:
+        st.caption("Es el primer mes del índice: no hay mes anterior para comparar.")
+    if stats["source_changed"]:
+        st.caption("Ojo: este mes cambia la fuente de noticias, así que la comparación con el "
+                   "mes anterior no es directa.")
+    if stats["below_min"]:
+        st.caption("Este mes tiene menos de 30 artículos: el puntaje medio es poco fiable.")
+    st.altair_chart(articles_chart(stats["series"], month), width="stretch")
+    note = "Son cifras agregadas"
+    if api_get("/headlines", month=month).get("enabled") is False:
+        note += "; los titulares no se muestran en este despliegue"
+    st.caption(f"Artículos por mes en el índice de noticias; en ámbar, el mes elegido. {note}.")
+
+
 def get_comparison() -> dict | None:
     try:
         return api_get("/comparison")
@@ -440,6 +497,7 @@ try:
         st.caption("El modelo no había visto este mes al entrenarse.")
 
     news_section(month, result, drivers)
+    news_stats_section(month)
 
     headline_search()
     try_headline()

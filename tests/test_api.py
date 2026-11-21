@@ -49,7 +49,8 @@ def client(table, monkeypatch, tmp_path):
     monkeypatch.setattr(params, "NEWS_SCORED_PATH", tmp_path / "news_scored.parquet")
     monkeypatch.setattr(params, "HEADLINES_ENABLED", True)  # no depende del entorno
     monkeypatch.setattr(params, "CLASSIFY_ENABLED", True)
-    caches = (fast.load_scored_news, fast.keyword_counts, fast.live_comparison)
+    caches = (fast.load_scored_news, fast.keyword_counts, fast.live_comparison,
+              fast.load_news_stats)
     for cached in caches:
         cached.cache_clear()
     yield TestClient(fast.app)
@@ -379,3 +380,71 @@ def test_classify_enabled_env_var(monkeypatch, value, enabled):
     finally:
         monkeypatch.delenv("CLASSIFY_ENABLED", raising=False)
         importlib.reload(params)
+
+
+@pytest.fixture
+def news_index_csv(tmp_path, monkeypatch):
+    """Índice de noticias sintético: 2014-11..2015-02, con cambio de fuente en 2015-01."""
+    path = tmp_path / "news_index.csv"
+    pd.DataFrame({
+        "month": ["2014-11-01", "2014-12-01", "2015-01-01", "2015-02-01"],
+        "infla_score_mean": [0.10, 0.25, 0.05, 0.20],
+        "news_n_articles": [300, 320, 25, 140],
+        "source": ["fnspid", "fnspid", "alpaca", "alpaca"],
+        "below_min_flag": [False, False, True, False],
+    }).to_csv(path, index=False)
+    monkeypatch.setattr(params, "NEWS_INDEX_PATH", path)
+    fast.load_news_stats.cache_clear()
+    return path
+
+
+def test_news_stats_month_and_previous(client, news_index_csv):
+    body = client.get("/news-stats", params={"month": "2015-01"}).json()
+    assert body["available"] is True and body["month"] == "2015-01"
+    assert body["n_articles"] == 25 and body["source"] == "alpaca" and body["below_min"] is True
+    assert body["infla_score_mean"] == pytest.approx(0.05)
+    assert body["previous"] == {"month": "2014-12", "n_articles": 320, "source": "fnspid",
+                                "below_min": False, "infla_score_mean": pytest.approx(0.25)}
+    assert body["score_change"] == pytest.approx(-0.20)
+    assert body["source_changed"] is True
+    assert [row["month"] for row in body["series"]] == ["2014-11", "2014-12", "2015-01", "2015-02"]
+    assert body["first_month"] == "2014-11" and body["last_month"] == "2015-02"
+
+
+def test_news_stats_first_month_has_no_previous(client, news_index_csv):
+    body = client.get("/news-stats", params={"month": "2014-11"}).json()
+    assert body["available"] is True and body["previous"] is None
+    assert body["score_change"] is None and body["source_changed"] is False
+
+
+@pytest.mark.parametrize("month, text", [("2006-12", "starts in 2014-11"),
+                                         ("2015-03", "ends in 2015-02")])
+def test_news_stats_outside_the_index(client, news_index_csv, month, text):
+    body = client.get("/news-stats", params={"month": month}).json()
+    assert body["available"] is False and text in body["message"]
+    assert len(body["series"]) == 4
+
+
+def test_news_stats_without_index_file(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(params, "NEWS_INDEX_PATH", tmp_path / "missing.csv")
+    fast.load_news_stats.cache_clear()
+    body = client.get("/news-stats", params={"month": "2015-01"}).json()
+    assert body["available"] is False and "not available" in body["message"]
+
+
+def test_news_stats_works_with_headlines_off_and_reads_no_parquet(client, news_index_csv,
+                                                                   monkeypatch):
+    monkeypatch.setattr(params, "HEADLINES_ENABLED", False)
+
+    def no_parquet(*args, **kwargs):
+        raise AssertionError("/news-stats must not read parquet")
+
+    monkeypatch.setattr(fast.pd, "read_parquet", no_parquet)
+    monkeypatch.setattr(fast.pq, "read_schema", no_parquet)
+    body = client.get("/news-stats", params={"month": "2015-02"}).json()
+    assert body["available"] is True and body["n_articles"] == 140
+    assert "title" not in str(body).lower()
+
+
+def test_news_stats_bad_month(client, news_index_csv):
+    assert client.get("/news-stats", params={"month": "junio"}).status_code == 422
